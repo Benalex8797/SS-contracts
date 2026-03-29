@@ -1556,7 +1556,7 @@ fn test_refund_after_partial_payment() {
 
 #[test]
 fn test_record_payment_removes_initial_fund_even_on_full_payment() {
-    // This is essentially test_record_payment but emphasizing that stranded funds are gone
+    // This is essentially test_record_payment but emphasising that stranded funds are gone
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1729,7 +1729,119 @@ fn test_fund_cancelled_escrow_rejected() {
     assert_eq!(res, Err(Ok(Error::EscrowCancelled)));
 }
 
-// ========== Commitment Hash Tests ==========
+// ========== Distributor / Pause Tests (godsmiracle-contract) ==========
+
+#[test]
+fn test_set_payment_distributor_updates_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let distributor = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+    client.set_payment_distributor(&distributor);
+
+    let config = client.get_config();
+    assert_eq!(config.payment_distributor, Some(distributor.clone()));
+}
+
+#[test]
+fn test_set_paused_requires_admin_auth() {
+    let env = Env::default();
+
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    // Note: initialize itself needs no auth check here; set_paused does.
+    client.initialize(&admin, &300);
+
+    // Without mocked auth the call must fail
+    let result = client.try_set_paused(&true);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_pause_blocks_lifecycle_operations_and_unpause_restores() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INVPAUSE");
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let pt_client = TokenClient::new(&env, &pt_id.address());
+
+    client.initialize(&admin, &300);
+
+    // Pause and verify create_escrow is blocked
+    client.set_paused(&true);
+    assert!(client.paused());
+
+    let create_while_paused = client.try_create_escrow(
+        &invoice_id,
+        &seller,
+        &seller, // debtor == seller for this test
+        &1000i128,
+        &1000i128,
+        &9_999_999u64,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "pause_test_invoice"),
+    );
+    assert_eq!(create_while_paused, Err(Ok(Error::Paused)));
+
+    // Unpause and create successfully
+    client.set_paused(&false);
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer, // use payer as debtor so record_payment works
+        &1000i128,
+        &1000i128,
+        &9_999_999u64,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "pause_test_invoice"),
+    );
+
+    // Pause and verify fund_escrow is blocked
+    pt_asset.mint(&buyer, &1000);
+    client.set_paused(&true);
+    let fund_while_paused = client.try_fund_escrow(&invoice_id, &buyer, &1000i128);
+    assert_eq!(fund_while_paused, Err(Ok(Error::Paused)));
+
+    // Unpause and fund successfully
+    client.set_paused(&false);
+    client.fund_escrow(&invoice_id, &buyer, &1000i128);
+
+    // Pause and verify record_payment is blocked
+    pt_asset.mint(&payer, &1000);
+    client.set_paused(&true);
+    let record_while_paused = client.try_record_payment(&invoice_id, &payer, &1000i128);
+    assert_eq!(record_while_paused, Err(Ok(Error::Paused)));
+
+    // Unpause and settle successfully
+    client.set_paused(&false);
+    client.record_payment(&invoice_id, &payer, &1000i128);
+
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+    // Seller receives the released purchase_price collateral (1000, 0% fee not set here
+    // but 300 bps fee means seller still gets 1000 from the collateral release path).
+    assert_eq!(pt_client.balance(&seller), 1000);
+}
+
+// ========== Commitment Hash Tests (main) ==========
 
 #[test]
 fn test_create_escrow_with_commitment() {
@@ -1800,8 +1912,8 @@ fn test_commitment_immutable_after_creation() {
     let escrow_data = escrow_client.get_escrow(&invoice_id);
     assert_eq!(escrow_data.commitment, original_commitment);
 
-    // Commitment should remain unchanged throughout the lifecycle
-    // (There's no update_commitment function, so this test verifies immutability by design)
+    // Commitment should remain unchanged throughout the lifecycle.
+    // (There's no update_commitment function, so this verifies immutability by design.)
 }
 
 #[test]
@@ -1845,7 +1957,7 @@ fn test_commitment_included_in_created_event() {
         (Symbol::new(&env, "escrow_created"),).into_val(&env)
     );
 
-    // Event data should include commitment as the 9th field
+    // Event data includes commitment as the 9th field
     let event_data: (
         Symbol,
         Address,

@@ -79,3 +79,26 @@ pub fn platform_fee_updated(env: &Env, old_fee_bps: u32, new_fee_bps: u32) {
         (old_fee_bps, new_fee_bps),
     );
 }
+
+/// Publish payment distributor update event with previous and new distributor addresses.
+pub fn payment_distributor_updated(
+    env: &Env,
+    had_previous_distributor: bool,
+    new_distributor: &Address,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "distributor_updated"),
+            new_distributor.clone(),
+        ),
+        had_previous_distributor,
+    );
+}
+
+/// Publish pause state updates.
+pub fn paused_updated(env: &Env, old_paused: bool, new_paused: bool) {
+    env.events().publish(
+        (Symbol::new(env, "paused_updated"),),
+        (old_paused, new_paused),
+    );
+}

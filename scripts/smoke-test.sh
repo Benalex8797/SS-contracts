@@ -101,7 +101,7 @@ invoke "$INV_TOKEN_CONTRACT_ID" initialize "$ADMIN_SECRET" \
   --symbol "SINV" \
   --decimals 18 \
   --invoice_id "$INVOICE_ID" \
-  --escrow_contract "$ESCROW_CONTRACT_ID"
+  --minter "$ESCROW_CONTRACT_ID"
 
 log "Initializing invoice-escrow..."
 invoke "$ESCROW_CONTRACT_ID" initialize "$ADMIN_SECRET" \
@@ -111,6 +111,10 @@ invoke "$ESCROW_CONTRACT_ID" initialize "$ADMIN_SECRET" \
 log "Initializing payment-distributor..."
 invoke "$DISTRIBUTOR_CONTRACT_ID" initialize "$ADMIN_SECRET" \
   --admin "$ADMIN_PUB"
+
+log "Wiring invoice-escrow to payment-distributor..."
+invoke "$ESCROW_CONTRACT_ID" set_payment_distributor "$ADMIN_SECRET" \
+  --payment_distributor "$DISTRIBUTOR_CONTRACT_ID"
 
 # ── 4. Create escrow ───────────────────────────────────────────────────────────
 DUE_DATE=$(( $(date +%s) + 86400 ))   # 24 hours from now

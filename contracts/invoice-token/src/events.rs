@@ -48,3 +48,11 @@ pub fn minter_updated_event(env: &Env, old_minter: &Address, new_minter: &Addres
         (old_minter, new_minter),
     );
 }
+
+/// Emit pause state updates.
+pub fn paused_updated_event(env: &Env, old_value: bool, new_value: bool) {
+    env.events().publish(
+        (Symbol::new(env, "paused_updated"),),
+        (old_value, new_value),
+    );
+}

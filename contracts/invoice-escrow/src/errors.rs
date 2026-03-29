@@ -1,5 +1,4 @@
 //! Error types for the invoice escrow contract.
-
 use soroban_sdk::contracterror;
 
 /// Errors that can occur during contract execution.
@@ -35,6 +34,8 @@ pub enum Error {
     Overflow = 13,
     /// Escrow has been cancelled by the seller.
     EscrowCancelled = 14,
+    /// Contract is paused and the requested operation is temporarily disabled.
+    Paused = 15,
     /// Payer is not the authorized debtor for this invoice.
     InvalidPayer = 15,
     /// Due date is invalid (e.g., in the past or zero).

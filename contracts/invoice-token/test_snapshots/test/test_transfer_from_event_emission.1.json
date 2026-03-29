@@ -371,6 +371,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "paused"
+                              },
+                              "val": {
+                                "bool": false
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "symbol"
                               },
                               "val": {

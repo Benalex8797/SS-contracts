@@ -23,6 +23,10 @@ pub struct Config {
     pub admin: soroban_sdk::Address,
     /// Platform fee in basis points (e.g. 300 = 3%).
     pub fee_bps: u32,
+    /// Optional payment distributor contract used for settlement/refund fan-out.
+    pub payment_distributor: Option<soroban_sdk::Address>,
+    /// Emergency pause flag for lifecycle-changing operations.
+    pub paused: bool,
 }
 
 /// Lifecycle status of an escrow.

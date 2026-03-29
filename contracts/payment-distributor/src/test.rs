@@ -1,191 +1,223 @@
 #![allow(deprecated)]
 
 use super::*;
-use soroban_sdk::token::Client as TokenClient;
-use soroban_sdk::token::StellarAssetClient as AssetClient;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use invoice_escrow::{EscrowStatus, InvoiceEscrow, InvoiceEscrowClient};
+use invoice_token::{InvoiceToken, InvoiceTokenClient};
+use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String as SorobanString, Symbol,
+};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn setup(
-    env: &Env,
-) -> (
-    Address,
-    PaymentDistributorClient<'_>,
-    Address,
-    TokenClient<'_>,
-) {
-    let distributor_id = env.register_contract(None, PaymentDistributor);
-    let client = PaymentDistributorClient::new(env, &distributor_id);
-    let admin = Address::generate(env);
-
-    // Initialize with mock auth
-    env.mock_all_auths();
-    client.initialize(&admin);
-
-    let token_admin = Address::generate(env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_client = TokenClient::new(env, &token_id.address());
-    let token_asset = AssetClient::new(env, &token_id.address());
-    token_asset.mint(&distributor_id, &10_000i128);
-
-    (admin, client, distributor_id, token_client)
+struct TestContext<'a> {
+    admin: Address,
+    seller: Address,
+    buyer: Address,
+    payer: Address,
+    escrow_id: Address,
+    escrow: InvoiceEscrowClient<'a>,
+    distributor_id: Address,
+    distributor: PaymentDistributorClient<'a>,
+    inv_token: InvoiceTokenClient<'a>,
+    payment_token: TokenClient<'a>,
+    payment_asset: AssetClient<'a>,
+    invoice_id: Symbol,
 }
 
-// ---------------------------------------------------------------------------
-// Issue #35: unit tests for payment-distributor distribution logic
-// ---------------------------------------------------------------------------
+fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> TestContext<'_> {
+    let admin = Address::generate(env);
+    let seller = Address::generate(env);
+    let buyer = Address::generate(env);
+    let payer = Address::generate(env);
 
-#[test]
-fn test_initialize_and_distribute() {
-    let env = Env::default();
-    env.mock_all_auths();
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow = InvoiceEscrowClient::new(env, &escrow_id);
 
-    let distributor_id = env.register_contract(None, PaymentDistributor);
-    let client = PaymentDistributorClient::new(&env, &distributor_id);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(env, &distributor_id);
 
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let inv_token_id = env.register(InvoiceToken, ());
+    let inv_token = InvoiceTokenClient::new(env, &inv_token_id);
 
-    let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_client = TokenClient::new(&env, &token_id.address());
-    let token_asset = AssetClient::new(&env, &token_id.address());
+    let token_admin = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = TokenClient::new(env, &token_id.address());
+    let payment_asset = AssetClient::new(env, &token_id.address());
 
-    let amount = 1000;
-    token_asset.mint(&distributor_id, &amount);
-
-    let recipient = Address::generate(&env);
-    let distribute_amt = 400;
-    client.distribute(&token_client.address, &recipient, &distribute_amt);
-
-    assert_eq!(token_client.balance(&recipient), distribute_amt);
-    assert_eq!(
-        token_client.balance(&distributor_id),
-        amount - distribute_amt
+    let invoice_id = Symbol::new(env, "INV_DIST");
+    inv_token.initialize(
+        &admin,
+        &SorobanString::from_str(env, "Invoice Dist"),
+        &SorobanString::from_str(env, "INVD"),
+        &18,
+        &invoice_id,
+        &escrow_id,
     );
+
+    escrow.initialize(&admin, &fee_bps);
+    distributor.initialize(&admin);
+    if configure_distributor {
+        escrow.set_payment_distributor(&distributor_id);
+    }
+
+    TestContext {
+        admin,
+        seller,
+        buyer,
+        payer,
+        escrow_id,
+        escrow,
+        distributor_id,
+        distributor,
+        inv_token,
+        payment_token,
+        payment_asset,
+        invoice_id,
+    }
+}
+
+fn create_and_fund(ctx: &TestContext<'_>, amount: i128, due_date: u64) {
+    ctx.payment_asset.mint(&ctx.buyer, &amount);
+    ctx.escrow.create_escrow(
+        &ctx.invoice_id,
+        &ctx.seller,
+        &amount,
+        &due_date,
+        &ctx.payment_token.address,
+        &ctx.inv_token.address,
+    );
+    ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer);
 }
 
 #[test]
 fn test_double_initialize_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let (admin, client, _, _) = setup(&env);
-    let res = client.try_initialize(&admin);
-    assert_eq!(res, Err(Ok(Error::AlreadyInit)));
-}
 
-#[test]
-fn test_get_admin_returns_correct_address() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (admin, client, _, _) = setup(&env);
-    assert_eq!(client.get_admin(), admin);
-}
-
-#[test]
-fn test_distribute_zero_amount_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (_admin, client, _, token) = setup(&env);
-    let recipient = Address::generate(&env);
-    let res = client.try_distribute(&token.address, &recipient, &0i128);
-    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
-}
-
-#[test]
-fn test_distribute_negative_amount_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (_admin, client, _, token) = setup(&env);
-    let recipient = Address::generate(&env);
-    let res = client.try_distribute(&token.address, &recipient, &-100i128);
-    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
-}
-
-#[test]
-#[ignore]
-fn test_distribute_unauthorized_non_admin_fails() {
-    let env = Env::default();
-    let distributor_id = env.register_contract(None, PaymentDistributor);
-    let client = PaymentDistributorClient::new(&env, &distributor_id);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
     let admin = Address::generate(&env);
+    distributor.initialize(&admin);
 
-    // Initialize with mock auth
-    env.mock_all_auths();
-    client.initialize(&admin);
-
-    let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_asset = AssetClient::new(&env, &token_id.address());
-    token_asset.mint(&distributor_id, &1000i128);
-
-    let token_client = TokenClient::new(&env, &token_id.address());
-    let recipient = Address::generate(&env);
-
-    // Create a new environment without mocking all auths
-    let env2 = Env::default();
-    let distributor_id2 = env2.register_contract(None, PaymentDistributor);
-    let client2 = PaymentDistributorClient::new(&env2, &distributor_id2);
-    let admin2 = Address::generate(&env2);
-
-    // Initialize with mock auth
-    env2.mock_all_auths();
-    client2.initialize(&admin2);
-
-    let token_id2 = env2.register_stellar_asset_contract_v2(Address::generate(&env2));
-    let token_asset2 = AssetClient::new(&env2, &token_id2.address());
-    token_asset2.mint(&distributor_id2, &1000i128);
-    let token_client2 = TokenClient::new(&env2, &token_id2.address());
-    let recipient2 = Address::generate(&env2);
-
-    // Now call distribute without mocking auth for this specific call
-    // The admin2 address will not have auth, so require_auth() should fail
-    let res = client2.try_distribute(&token_client2.address, &recipient2, &100i128);
-    let _ = (admin, token_client, recipient);
-    assert!(res.is_err());
+    let result = distributor.try_initialize(&admin);
+    assert_eq!(result, Err(Ok(Error::AlreadyInit)));
 }
 
 #[test]
-fn test_distribute_not_initialized_fails() {
+fn test_get_distribution_state_defaults_to_zero() {
     let env = Env::default();
     env.mock_all_auths();
-    let distributor_id = env.register_contract(None, PaymentDistributor);
-    let client = PaymentDistributorClient::new(&env, &distributor_id);
-    let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin);
-    let token_client = TokenClient::new(&env, &token_id.address());
-    let recipient = Address::generate(&env);
-    let res = client.try_distribute(&token_client.address, &recipient, &100i128);
-    assert_eq!(res, Err(Ok(Error::NotInit)));
+
+    let ctx = setup(&env, 300, true);
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+
+    assert_eq!(state.paid_distributed, 0);
+    assert!(!state.refund_distributed);
 }
 
 #[test]
-fn test_distribute_full_balance() {
+fn test_distribute_payment_rejects_created_escrow() {
     let env = Env::default();
     env.mock_all_auths();
-    let (_admin, client, distributor_id, token) = setup(&env);
-    let recipient = Address::generate(&env);
-    let full_balance = token.balance(&distributor_id);
-    client.distribute(&token.address, &recipient, &full_balance);
-    assert_eq!(token.balance(&recipient), full_balance);
-    assert_eq!(token.balance(&distributor_id), 0);
+
+    let ctx = setup(&env, 300, true);
+
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 0i128, 0i128, 0i128, 0i128],
+        &0u32,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidEscrowStatus)));
 }
 
 #[test]
-fn test_distribute_multiple_recipients() {
+fn test_incremental_payment_distribution_tracks_paid_amount() {
     let env = Env::default();
     env.mock_all_auths();
-    let (_admin, client, distributor_id, token) = setup(&env);
 
-    let r1 = Address::generate(&env);
-    let r2 = Address::generate(&env);
-    client.distribute(&token.address, &r1, &3000i128);
-    client.distribute(&token.address, &r2, &2000i128);
+    let ctx = setup(&env, 500, true); // 5% fee
+    create_and_fund(&ctx, 1_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &1_000);
 
-    assert_eq!(token.balance(&r1), 3000);
-    assert_eq!(token.balance(&r2), 2000);
-    assert_eq!(token.balance(&distributor_id), 5000);
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &400);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 400);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 380);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 20);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+    assert_eq!(ctx.payment_token.balance(&ctx.escrow_id), 600);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        400
+    );
+    assert_eq!(
+        ctx.escrow.get_escrow_status(&ctx.invoice_id),
+        EscrowStatus::Funded
+    );
+
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &600);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 950);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 50);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+    assert_eq!(ctx.payment_token.balance(&ctx.escrow_id), 0);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        1_000
+    );
+    assert_eq!(
+        ctx.escrow.get_escrow_status(&ctx.invoice_id),
+        EscrowStatus::Settled
+    );
+}
+
+#[test]
+fn test_refund_distribution_can_only_happen_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    env.ledger().set_timestamp(1_000);
+    create_and_fund(&ctx, 1_000, 2_000);
+
+    ctx.payment_asset.mint(&ctx.payer, &400);
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &400);
+
+    env.ledger().set_timestamp(2_001);
+    ctx.escrow.refund(&ctx.invoice_id);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 400);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 988);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 12);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 400);
+    assert!(state.refund_distributed);
+
+    let second_refund = ctx.distributor.try_distribute_refund(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![&env, ctx.payment_token.address.clone(), ctx.buyer.clone()],
+        &soroban_sdk::vec![&env, 600i128],
+        &3u32,
+    );
+    assert_eq!(second_refund, Err(Ok(Error::RefundAlreadyDistributed)));
 }

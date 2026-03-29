@@ -6,7 +6,7 @@
 # Deploys and initialises the following Soroban contracts:
 #   1. invoice-token      (SEP-41 invoice tokenisation)
 #   2. invoice-escrow     (escrow lifecycle + settlement)
-#   3. payment-distributor (automated payment distribution)
+#   3. payment-distributor (settlement/refund payout fan-out)
 #
 # Usage:
 #   # 1. Copy .env.example to .env and fill in your values
@@ -213,6 +213,17 @@ soroban contract invoke \
     --admin "${ADMIN_PUBLIC_KEY}"
 
 success "payment-distributor initialised"
+
+# --- invoice-escrow.set_payment_distributor ---
+info "Wiring invoice-escrow to payment-distributor …"
+
+soroban contract invoke \
+    "${SOROBAN_FLAGS[@]}" \
+    --id "${INVOICE_ESCROW_ID}" \
+    -- set_payment_distributor \
+    --payment_distributor "${PAYMENT_DISTRIBUTOR_ID}"
+
+success "invoice-escrow wired to payment-distributor"
 
 # ---------------------------------------------------------------------------
 # Summary

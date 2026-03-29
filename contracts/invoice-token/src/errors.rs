@@ -27,4 +27,6 @@ pub enum Error {
     Overflow = 9,
     /// Approval expiration_ledger must be >= current ledger unless setting amount to 0.
     InvalidExpiration = 10,
+    /// Contract is paused and the requested operation is temporarily disabled.
+    Paused = 11,
 }

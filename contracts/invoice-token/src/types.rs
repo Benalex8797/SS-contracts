@@ -35,6 +35,8 @@ pub struct TokenMetadata {
     pub invoice_id: soroban_sdk::Symbol,
     /// If true, transfers restricted until settlement (admin can still transfer).
     pub transfer_locked: bool,
+    /// Emergency pause flag for sensitive token operations.
+    pub paused: bool,
 }
 
 /// Allowance entry: amount and expiration ledger.

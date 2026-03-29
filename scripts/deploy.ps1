@@ -6,7 +6,7 @@
     Deploys and initialises the following Soroban contracts:
       1. invoice-token      (SEP-41 invoice tokenisation)
       2. invoice-escrow     (escrow lifecycle + settlement)
-      3. payment-distributor (automated payment distribution)
+      3. payment-distributor (settlement/refund payout fan-out)
 
 .EXAMPLE
     # 1. Copy .env.example to .env and fill in your values
@@ -232,6 +232,19 @@ soroban contract invoke `
 
 if ($LASTEXITCODE -ne 0) { Write-Err "payment-distributor initialization failed" }
 Write-Ok "payment-distributor initialised"
+
+# --- invoice-escrow.set_payment_distributor ---
+Write-Info "Wiring invoice-escrow to payment-distributor ..."
+
+soroban contract invoke `
+    --source $StellarSecretKey `
+    --network $StellarNetwork `
+    --id $InvoiceEscrowId `
+    -- set_payment_distributor `
+    --payment_distributor $PaymentDistributorId
+
+if ($LASTEXITCODE -ne 0) { Write-Err "invoice-escrow distributor wiring failed" }
+Write-Ok "invoice-escrow wired to payment-distributor"
 
 # ---------------------------------------------------------------------------
 # Summary

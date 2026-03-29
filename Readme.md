@@ -16,7 +16,8 @@ This repository contains the core Soroban smart contracts that power StellarSett
 
 - **Invoice Escrow**: Secure escrow creation, funding, and settlement
 - **Invoice Tokens**: SEP-41 compliant tokenization of invoices
-- **Payment Distribution**: Automated payment distribution to investors
+- **Payment Distribution**: Lifecycle-driven payout fan-out for seller, investor, and platform fee
+- **Emergency Pause**: Admin-controlled stop switches for escrow and token operations
 
 ## 🏗️ Architecture
 ```
@@ -55,7 +56,7 @@ soroban contract build
 
 Repeatable deployment scripts live in [`scripts/`](scripts/). See the [**How to run scripts**](#-how-to-run-scripts) section below for full instructions.
 
-The scripts deploy and initialise all three contracts in the correct order using environment variables. No manual copy-paste of WASM paths or contract IDs required.
+The scripts deploy and initialise all three contracts, then wire `invoice-escrow` to `payment-distributor` so settlement and refund payouts run through the distributor flow by default.
 
 ## 📚 Contract Documentation
 
@@ -120,7 +121,8 @@ The script:
 2. Validates all required variables and WASM paths
 3. Deploys **invoice-token**, **invoice-escrow**, and **payment-distributor** in order
 4. Calls `initialize` on each contract with the configured arguments
-5. Prints a summary of deployed contract IDs
+5. Calls `invoice-escrow.set_payment_distributor(...)` to enable distributor-based payouts
+6. Prints a summary of deployed contract IDs
 
 ### 3b. PowerShell (Windows)
 
@@ -144,7 +146,7 @@ INVOICE_TOKEN_CONTRACT_ID=C...
 PAYMENT_DISTRIBUTOR_CONTRACT_ID=C...
 ```
 
-The deploy step is skipped for any contract whose ID is pre-filled; `initialize` is still called.
+The deploy step is skipped for any contract whose ID is pre-filled; `initialize` is still called, and the escrow-to-distributor wiring step still runs.
 
 ## 🧪 Testing
 ```bash

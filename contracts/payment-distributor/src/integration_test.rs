@@ -1,14 +1,7 @@
-//! Cross-contract integration tests for payment-distributor.
-//!
-//! These tests exercise the full distribution pipeline:
-//!   invoice-escrow lifecycle → settlement → payment-distributor distribution/claim
-//!
-//! Closes #36.
-
 #![allow(deprecated)]
 
 use super::*;
-use invoice_escrow::{InvoiceEscrow, InvoiceEscrowClient};
+use invoice_escrow::{EscrowStatus, InvoiceEscrow, InvoiceEscrowClient};
 use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
@@ -16,273 +9,167 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, String as SorobanString, Symbol,
 };
 
-/// Helper function to create a test commitment hash (SHA-256 format)
-fn test_commitment(env: &Env, data: &str) -> BytesN<32> {
-    let mut array = [0u8; 32];
-    let bytes = data.as_bytes();
-    let len = bytes.len().min(32);
-    array[..len].copy_from_slice(&bytes[..len]);
-    BytesN::from_array(env, &array)
+struct FlowContext<'a> {
+    admin: Address,
+    seller: Address,
+    buyer: Address,
+    payer: Address,
+    escrow_id: Address,
+    escrow: InvoiceEscrowClient<'a>,
+    distributor_id: Address,
+    distributor: PaymentDistributorClient<'a>,
+    inv_token: InvoiceTokenClient<'a>,
+    payment_token: TokenClient<'a>,
+    payment_asset: AssetClient<'a>,
+    invoice_id: Symbol,
 }
 
-// ---------------------------------------------------------------------------
-// Happy-path integration: create → fund → settle → distribute
-// ---------------------------------------------------------------------------
+fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> FlowContext<'_> {
+    let admin = Address::generate(env);
+    let seller = Address::generate(env);
+    let buyer = Address::generate(env);
+    let payer = Address::generate(env);
 
-#[test]
-fn test_integration_settle_then_distribute() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    // Identities
-    let admin = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let buyer = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let distributor_recipient = Address::generate(&env);
-
-    // Register contracts
     let escrow_id = env.register(InvoiceEscrow, ());
-    let escrow = InvoiceEscrowClient::new(&env, &escrow_id);
-
-    let inv_token_id = env.register(InvoiceToken, ());
-    let inv_token = InvoiceTokenClient::new(&env, &inv_token_id);
+    let escrow = InvoiceEscrowClient::new(env, &escrow_id);
 
     let distributor_id = env.register(PaymentDistributor, ());
-    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+    let distributor = PaymentDistributorClient::new(env, &distributor_id);
 
-    // Payment token
-    let pt_admin = Address::generate(&env);
-    let pt_id = env.register_stellar_asset_contract_v2(pt_admin.clone());
-    let pt_client = TokenClient::new(&env, &pt_id.address());
-    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(InvoiceToken, ());
+    let inv_token = InvoiceTokenClient::new(env, &inv_token_id);
 
-    // Initialize
-    let invoice_id = Symbol::new(&env, "INV_DIST");
+    let token_admin = Address::generate(env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = TokenClient::new(env, &token_id.address());
+    let payment_asset = AssetClient::new(env, &token_id.address());
+
+    let invoice_id = Symbol::new(env, "INV_FLOW");
     inv_token.initialize(
         &admin,
-        &SorobanString::from_str(&env, "Invoice Dist"),
-        &SorobanString::from_str(&env, "INVD"),
+        &SorobanString::from_str(env, "Invoice Flow"),
+        &SorobanString::from_str(env, "INVF"),
         &18,
         &invoice_id,
         &escrow_id,
     );
-    escrow.initialize(&admin, &0); // 0% fee for simplicity
+
+    escrow.initialize(&admin, &fee_bps);
     distributor.initialize(&admin);
+    if configure_distributor {
+        escrow.set_payment_distributor(&distributor_id);
+    }
 
-    // Fund participants
-    let amount = 1000i128;
-    pt_asset.mint(&buyer, &amount);
-    pt_asset.mint(&payer, &amount);
+    FlowContext {
+        admin,
+        seller,
+        buyer,
+        payer,
+        escrow_id,
+        escrow,
+        distributor_id,
+        distributor,
+        inv_token,
+        payment_token,
+        payment_asset,
+        invoice_id,
+    }
+}
 
-    // Escrow lifecycle
-    let due_date = 99_999u64;
-    escrow.create_escrow(
-        &invoice_id,
-        &seller,
-        &payer,
-        &amount,
+fn create_and_fund(ctx: &FlowContext<'_>, amount: i128, due_date: u64) {
+    ctx.payment_asset.mint(&ctx.buyer, &amount);
+    ctx.payment_asset.mint(&ctx.payer, &amount);
+    ctx.escrow.create_escrow(
+        &ctx.invoice_id,
+        &ctx.seller,
         &amount,
         &due_date,
-        &pt_id.address(),
-        &inv_token_id,
-        &test_commitment(&env, "test_invoice_data"),
+        &ctx.payment_token.address,
+        &ctx.inv_token.address,
     );
-    escrow.fund_escrow(&invoice_id, &buyer, &amount);
-
-    assert_eq!(pt_client.balance(&escrow_id), amount);
-
-    // Payer settles the invoice
-    escrow.record_payment(&invoice_id, &payer, &amount);
-
-    // After settlement seller received the escrow principal back, buyer received payer's funds
-    // Seller now wants to distribute their proceeds via payment-distributor
-    // Seller mints into distributor as an example redistribution
-    let dist_amount = 500i128;
-    pt_asset.mint(&distributor_id, &dist_amount);
-    distributor.distribute(&pt_id.address(), &distributor_recipient, &dist_amount);
-
-    assert_eq!(pt_client.balance(&distributor_recipient), dist_amount);
-    assert_eq!(pt_client.balance(&distributor_id), 0);
+    ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer);
 }
 
-// ---------------------------------------------------------------------------
-// Failure: distribution blocked when escrow is not yet settled
-// ---------------------------------------------------------------------------
-
 #[test]
-fn test_integration_distribute_while_escrow_funded_not_settled() {
+fn test_integration_settlement_routes_through_distributor_when_configured() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let admin = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let buyer = Address::generate(&env);
+    let ctx = setup(&env, 300, true);
+    create_and_fund(&ctx, 1_000, 50_000);
 
-    let escrow_id = env.register(InvoiceEscrow, ());
-    let escrow = InvoiceEscrowClient::new(&env, &escrow_id);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
-    let inv_token_id = env.register(InvoiceToken, ());
-    let inv_token = InvoiceTokenClient::new(&env, &inv_token_id);
-
-    let distributor_id = env.register(PaymentDistributor, ());
-    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
-
-    let pt_admin = Address::generate(&env);
-    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
-    let pt_client = TokenClient::new(&env, &pt_id.address());
-    let pt_asset = AssetClient::new(&env, &pt_id.address());
-
-    let invoice_id = Symbol::new(&env, "INV_NSET");
-    inv_token.initialize(
-        &admin,
-        &SorobanString::from_str(&env, "Invoice Unsettled"),
-        &SorobanString::from_str(&env, "INVNS"),
-        &18,
-        &invoice_id,
-        &escrow_id,
+    assert_eq!(ctx.payment_token.balance(&ctx.payer), 0);
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 970);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 30);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+    assert_eq!(ctx.payment_token.balance(&ctx.escrow_id), 0);
+    assert_eq!(
+        ctx.escrow.get_escrow_status(&ctx.invoice_id),
+        EscrowStatus::Settled
     );
-    escrow.initialize(&admin, &0);
-    distributor.initialize(&admin);
+    assert!(!ctx.inv_token.transfer_locked());
 
-    let amount = 500i128;
-    pt_asset.mint(&buyer, &amount);
-    escrow.create_escrow(
-        &invoice_id,
-        &seller,
-        &seller,
-        &amount,
-        &amount,
-        &99_999u64,
-        &pt_id.address(),
-        &inv_token_id,
-        &test_commitment(&env, "test_invoice_data"),
-    );
-    escrow.fund_escrow(&invoice_id, &buyer, &amount);
-
-    // Escrow is Funded (not Settled). The distributor has no funds yet.
-    // Attempting to distribute 0 tokens should fail with InvalidAmount.
-    let recipient = Address::generate(&env);
-    let res = distributor.try_distribute(&pt_id.address(), &recipient, &0i128);
-    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
-
-    // Also confirm the escrow is still in Funded state (settlement hasn't happened)
-    let escrow_data = escrow.get_escrow(&invoice_id);
-    assert_eq!(escrow_data.status, invoice_escrow::EscrowStatus::Funded);
-
-    let _ = pt_client;
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 1_000);
+    assert!(!state.refund_distributed);
 }
 
-// ---------------------------------------------------------------------------
-// Failure: claim fails for unauthorized caller (non-admin distribute)
-// ---------------------------------------------------------------------------
-
 #[test]
-#[ignore]
-fn test_integration_distribute_unauthorized_caller() {
+fn test_integration_partial_payment_then_refund_routes_through_distributor() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let admin = Address::generate(&env);
-
-    let distributor_id = env.register(PaymentDistributor, ());
-    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
-
-    let pt_admin = Address::generate(&env);
-    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
-    let pt_asset = AssetClient::new(&env, &pt_id.address());
-
-    distributor.initialize(&admin);
-    pt_asset.mint(&distributor_id, &1000i128);
-
-    // Create a new environment without mocking all auths for the unauthorized test
-    let env2 = Env::default();
-    let distributor_id2 = env2.register(PaymentDistributor, ());
-    let distributor2 = PaymentDistributorClient::new(&env2, &distributor_id2);
-    let admin2 = Address::generate(&env2);
-
-    // Initialize with mock auth
-    env2.mock_all_auths();
-    distributor2.initialize(&admin2);
-
-    let pt_id2 = env2.register_stellar_asset_contract_v2(Address::generate(&env2));
-    AssetClient::new(&env2, &pt_id2.address()).mint(&distributor_id2, &1000i128);
-    let pt_client2 = TokenClient::new(&env2, &pt_id2.address());
-    let recipient2 = Address::generate(&env2);
-
-    // Now call distribute without admin auth - should fail
-    let res = distributor2.try_distribute(&pt_client2.address, &recipient2, &100i128);
-    let _ = (admin, distributor, pt_id);
-    assert!(res.is_err());
-}
-
-// ---------------------------------------------------------------------------
-// Integration: refund lifecycle does NOT trigger distributor distribution
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_integration_refund_does_not_affect_distributor() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let admin = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let buyer = Address::generate(&env);
-
-    let escrow_id = env.register(InvoiceEscrow, ());
-    let escrow = InvoiceEscrowClient::new(&env, &escrow_id);
-
-    let inv_token_id = env.register(InvoiceToken, ());
-    let inv_token = InvoiceTokenClient::new(&env, &inv_token_id);
-
-    let distributor_id = env.register(PaymentDistributor, ());
-    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
-
-    let pt_admin = Address::generate(&env);
-    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
-    let pt_client = TokenClient::new(&env, &pt_id.address());
-    let pt_asset = AssetClient::new(&env, &pt_id.address());
-
-    let invoice_id = Symbol::new(&env, "INV_REF");
-    let due_date = 10_000u64;
-    inv_token.initialize(
-        &admin,
-        &SorobanString::from_str(&env, "Refund Test"),
-        &SorobanString::from_str(&env, "INVR"),
-        &18,
-        &invoice_id,
-        &escrow_id,
-    );
-    escrow.initialize(&admin, &0);
-    distributor.initialize(&admin);
-
-    let amount = 800i128;
-    pt_asset.mint(&buyer, &amount);
-
+    let ctx = setup(&env, 300, true);
     env.ledger().set_timestamp(5_000);
-    escrow.create_escrow(
-        &invoice_id,
-        &seller,
-        &seller,
-        &amount,
-        &amount,
-        &due_date,
-        &pt_id.address(),
-        &inv_token_id,
-        &test_commitment(&env, "test_invoice_data"),
-    );
-    escrow.fund_escrow(&invoice_id, &buyer, &amount);
+    create_and_fund(&ctx, 1_000, 10_000);
 
-    // Advance past due date and refund
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &400);
+
     env.ledger().set_timestamp(10_001);
-    escrow.refund(&invoice_id);
+    ctx.escrow.refund(&ctx.invoice_id);
 
-    // Distributor has no funds; distributing 0 fails
-    let recipient = Address::generate(&env);
-    let res = distributor.try_distribute(&pt_id.address(), &recipient, &0i128);
-    assert_eq!(res, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 400);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 988);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 12);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+    assert_eq!(
+        ctx.escrow.get_escrow_status(&ctx.invoice_id),
+        EscrowStatus::Refunded
+    );
+    assert!(!ctx.inv_token.transfer_locked());
 
-    // Buyer was refunded
-    assert_eq!(pt_client.balance(&buyer), amount);
-    assert_eq!(pt_client.balance(&distributor_id), 0);
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 400);
+    assert!(state.refund_distributed);
+}
+
+#[test]
+fn test_integration_escrow_keeps_direct_flow_without_distributor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, false);
+    create_and_fund(&ctx, 1_000, 50_000);
+
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 970);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 30);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        0
+    );
 }
