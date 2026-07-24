@@ -2,9 +2,9 @@ name: Smart Contracts CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [dev]
   pull_request:
-    branches: [main, develop]
+    branches: [dev]
 
 jobs:
   test:
