@@ -2,7 +2,7 @@
 
 use super::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
-use soroban_sdk::{Address, Env, IntoVal, String as SorobanString, Symbol, TryIntoVal};
+use soroban_sdk::{Address, Env, IntoVal, String as SorobanString, Symbol, TryIntoVal, Vec};
 
 fn setup_token(env: &Env) -> (InvoiceTokenClient<'_>, Address, Address) {
     let contract_id = env.register(InvoiceToken, ());
@@ -1093,4 +1093,132 @@ fn test_approve_positive_amount_invalid_expiration_rejected() {
 
     // Verify no allowance was set
     assert_eq!(client.allowance(&admin, &spender), 0);
+}
+
+#[test]
+fn test_sub_asset_decimals_can_be_updated_within_supported_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    client.set_decimals(&18);
+    assert_eq!(client.decimals(), 18);
+
+    let events = env.events().all();
+    let (_contract_addr, topics, data) = events.last().unwrap();
+    assert_eq!(topics, (Symbol::new(&env, "decimals_updated"),).into_val(&env));
+    let event_data: (u32, u32) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data, (7, 18));
+}
+
+#[test]
+fn test_sub_asset_decimals_reject_unsupported_precision() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    let result = client.try_set_decimals(&19);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidDecimals)));
+    assert_eq!(client.decimals(), 7);
+}
+
+#[test]
+fn test_initialize_rejects_unsupported_precision() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice INV-001");
+    let symbol = SorobanString::from_str(&env, "INV001");
+    let invoice_id = Symbol::new(&env, "inv_001");
+
+    let result = client.try_initialize(&admin, &name, &symbol, &19, &invoice_id, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidDecimals)));
+}
+
+#[test]
+fn test_balance_batch_preserves_order_and_includes_zero_balances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+    let first = Address::generate(&env);
+    let empty = Address::generate(&env);
+    let second = Address::generate(&env);
+    client.mint(&first, &25, &minter);
+    client.mint(&second, &50, &minter);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(first.clone());
+    ids.push_back(empty.clone());
+    ids.push_back(second.clone());
+    ids.push_back(first);
+
+    let balances = client.balance_batch(&ids);
+    assert_eq!(balances, soroban_sdk::vec![&env, 25i128, 0, 50, 25]);
+}
+
+#[test]
+fn test_balance_batch_requires_initialization() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let ids = soroban_sdk::vec![&env, Address::generate(&env)];
+
+    assert_eq!(
+        client.try_balance_batch(&ids),
+        Err(Ok(crate::errors::Error::NotInit))
+    );
+}
+
+#[test]
+fn test_revoke_approval_clears_allowance_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&admin, &spender, &500, &expiration);
+
+    client.revoke_approval(&admin, &spender);
+    assert_eq!(client.allowance(&admin, &spender), 0);
+
+    let events = env.events().all();
+    let (_contract_addr, topics, data) = events.last().unwrap();
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "approval_revoked"), admin, spender).into_val(&env)
+    );
+    let event_data: () = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data, ());
+}
+
+#[test]
+fn test_revoke_approval_requires_from_authorization() {
+    let env = Env::default();
+    let (client, admin, _minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+
+    assert!(client.try_revoke_approval(&admin, &spender).is_err());
+}
+
+#[test]
+fn test_pause_blocks_burn_and_burn_from() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 100;
+    client.mint(&admin, &100, &minter);
+    client.approve(&admin, &spender, &100, &expiration);
+    client.set_paused(&true);
+
+    assert_eq!(client.try_burn(&admin, &10), Err(Ok(crate::errors::Error::Paused)));
+    assert_eq!(
+        client.try_burn_from(&spender, &admin, &10),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(client.balance(&admin), 100);
+    assert_eq!(client.total_supply(), 100);
+    assert_eq!(client.allowance(&admin, &spender), 100);
 }
