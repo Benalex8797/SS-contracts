@@ -311,8 +311,7 @@ impl InvoiceEscrow {
             // 3. Pro-rata investor distribution
             if let Some(funder) = &funder_opt {
                 if data.funded_amt > 0 && investor_amount > 0 {
-                    let funder_amt =
-                        storage::get_funder_amount(&env, invoice_id.clone(), funder);
+                    let funder_amt = storage::get_funder_amount(&env, invoice_id.clone(), funder);
                     let pro_rata_share = investor_amount
                         .checked_mul(funder_amt)
                         .ok_or(Error::Overflow)?

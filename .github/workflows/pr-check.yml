@@ -35,12 +35,13 @@ jobs:
             revert
 
       - name: Check PR description for issue reference
-        run: |
-          PR_BODY=$(gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json body --jq '.body')
-          if ! echo "$PR_BODY" | grep -qiE '(Closes|Fixes|Resolves)\s+#\d+'; then
-            echo "::error::PR description must contain a closing keyword (Closes #XX, Fixes #XX, or Resolves #XX)"
-            exit 1
-          fi
-          echo "✓ Issue reference found in PR description"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const regex = /(closes|fixes|resolves)\s+#\d+/i;
+            if (!regex.test(body)) {
+              core.setFailed('PR description must contain a closing keyword (Closes #XX, Fixes #XX, or Resolves #XX)');
+            } else {
+              core.info('Issue reference found in PR description');
+            }
