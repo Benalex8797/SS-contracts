@@ -1106,7 +1106,10 @@ fn test_sub_asset_decimals_can_be_updated_within_supported_range() {
 
     let events = env.events().all();
     let (_contract_addr, topics, data) = events.last().unwrap();
-    assert_eq!(topics, (Symbol::new(&env, "decimals_updated"),).into_val(&env));
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "decimals_updated"),).into_val(&env)
+    );
     let event_data: (u32, u32) = data.try_into_val(&env).unwrap();
     assert_eq!(event_data, (7, 18));
 }
@@ -1213,7 +1216,10 @@ fn test_pause_blocks_burn_and_burn_from() {
     client.approve(&admin, &spender, &100, &expiration);
     client.set_paused(&true);
 
-    assert_eq!(client.try_burn(&admin, &10), Err(Ok(crate::errors::Error::Paused)));
+    assert_eq!(
+        client.try_burn(&admin, &10),
+        Err(Ok(crate::errors::Error::Paused))
+    );
     assert_eq!(
         client.try_burn_from(&spender, &admin, &10),
         Err(Ok(crate::errors::Error::Paused))
