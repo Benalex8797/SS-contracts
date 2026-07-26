@@ -6,7 +6,7 @@ use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Bytes, BytesN, Env, String as SorobanString, Symbol,
+    Address, Env, String as SorobanString, Symbol,
 };
 
 struct FlowContext<'a> {
@@ -79,15 +79,19 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> FlowContext<'_
 fn create_and_fund(ctx: &FlowContext<'_>, amount: i128, due_date: u64) {
     ctx.payment_asset.mint(&ctx.buyer, &amount);
     ctx.payment_asset.mint(&ctx.payer, &amount);
+    let commitment = soroban_sdk::BytesN::from_array(&ctx.escrow.env, &[0u8; 32]);
     ctx.escrow.create_escrow(
         &ctx.invoice_id,
         &ctx.seller,
+        &ctx.payer,
+        &amount,
         &amount,
         &due_date,
         &ctx.payment_token.address,
         &ctx.inv_token.address,
+        &commitment,
     );
-    ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer);
+    ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer, &amount);
 }
 
 #[test]

@@ -1627,7 +1627,7 @@ fn setup_escrow_created(env: &Env) -> (Address, InvoiceEscrowClient<'_>, Address
         &9_999_999u64,
         &pt_id.address(),
         &inv_token_id,
-        &test_commitment(&env, "test_invoice_data"),
+        &test_commitment(env, "test_invoice_data"),
     );
 
     let _ = (pt_asset,);

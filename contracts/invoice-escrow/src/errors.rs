@@ -36,8 +36,8 @@ pub enum Error {
     EscrowCancelled = 14,
     /// Contract is paused and the requested operation is temporarily disabled.
     Paused = 15,
-    /// Payer is not the authorized debtor for this invoice.
-    InvalidPayer = 15,
     /// Due date is invalid (e.g., in the past or zero).
     InvalidDueDate = 16,
+    /// Payer is not the authorized debtor for this invoice.
+    InvalidPayer = 17,
 }
