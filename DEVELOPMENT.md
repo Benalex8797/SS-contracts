@@ -46,6 +46,16 @@ cargo test --package payment-distributor
 bash scripts/deploy.sh
 ```
 
+### 3. Git Pre-Commit Hooks
+
+To automatically enforce formatting and linting before every commit:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+This installs a git hook at `.git/hooks/pre-commit` that runs `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
+
 ---
 
 ## 🌿 Contribution Workflow Reminder

@@ -78,15 +78,19 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> TestContext<'_
 
 fn create_and_fund(ctx: &TestContext<'_>, amount: i128, due_date: u64) {
     ctx.payment_asset.mint(&ctx.buyer, &amount);
+    let commitment = soroban_sdk::BytesN::from_array(&ctx.escrow.env, &[0u8; 32]);
     ctx.escrow.create_escrow(
         &ctx.invoice_id,
         &ctx.seller,
+        &ctx.payer,
+        &amount,
         &amount,
         &due_date,
         &ctx.payment_token.address,
         &ctx.inv_token.address,
+        &commitment,
     );
-    ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer);
+    ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer, &amount);
 }
 
 #[test]
