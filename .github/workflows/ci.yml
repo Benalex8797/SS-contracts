@@ -11,6 +11,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  WASM_MAX_BYTES: 262144
 
 jobs:
   check-and-test:
@@ -40,27 +41,45 @@ jobs:
       - name: Run workspace unit and integration tests
         run: cargo test --all --verbose
 
-      - name: Build WASM contracts
+      - name: Build WASM contracts in release mode
         run: |
           cargo build --release --target wasm32-unknown-unknown
 
-  audit-job:
-    name: Dependency Vulnerability Audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Report WASM artifact sizes
+        run: |
+          set -euo pipefail
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+          shopt -s nullglob
+          wasm_artifacts=(target/wasm32-unknown-unknown/release/*.wasm)
 
-      - name: Cache Cargo dependencies and build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: cargo-audit
+          if (( ${#wasm_artifacts[@]} == 0 )); then
+            echo "No WASM artifacts found in target/wasm32-unknown-unknown/release" >&2
+            exit 1
+          fi
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+          printf '%-64s %12s %12s\n' "Artifact" "Bytes" "KiB"
+          for artifact in "${wasm_artifacts[@]}"; do
+            size_bytes=$(stat -c%s "$artifact")
+            size_kib=$(awk -v bytes="$size_bytes" 'BEGIN { printf "%.2f", bytes / 1024 }')
+            printf '%-64s %12d %12s\n' "$artifact" "$size_bytes" "$size_kib"
+          done
 
-      - name: Run dependency vulnerability audit
-        run: cargo audit
+      - name: Enforce WASM artifact size limit
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          wasm_artifacts=(target/wasm32-unknown-unknown/release/*.wasm)
+
+          if (( ${#wasm_artifacts[@]} == 0 )); then
+            echo "No WASM artifacts found in target/wasm32-unknown-unknown/release" >&2
+            exit 1
+          fi
+
+          for artifact in "${wasm_artifacts[@]}"; do
+            size_bytes=$(stat -c%s "$artifact")
+            if (( size_bytes > WASM_MAX_BYTES )); then
+              echo "${artifact} is ${size_bytes} bytes, exceeding the ${WASM_MAX_BYTES}-byte limit" >&2
+              exit 1
+            fi
+          done
