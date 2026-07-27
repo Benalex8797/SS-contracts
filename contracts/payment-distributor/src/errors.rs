@@ -13,4 +13,6 @@ pub enum Error {
     RefundAlreadyDistributed = 7,
     Overflow = 8,
     WrongDistributor = 9,
+    /// Fee BPS exceeds maximum allowed value (10,000). Issue #124.
+    InvalidBps = 10,
 }
