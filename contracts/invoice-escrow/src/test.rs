@@ -2231,6 +2231,114 @@ fn test_create_escrow_due_date_in_future_accepted() {
 }
 
 #[test]
+fn test_fund_escrow_signed_succeeds_with_valid_nonce() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_SIG1");
+    let amount = 1000;
+
+    payment_token_asset.mint(&buyer, &2000);
+
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &amount,
+        &amount,
+        &1000000,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "signed_fund_test"),
+    );
+
+    // A relayer submits the buyer's off-chain approved funding request with nonce 1.
+    escrow_client.fund_escrow_signed(&invoice_id, &buyer, &amount, &1u64);
+
+    let status = escrow_client.get_escrow_status(&invoice_id);
+    assert_eq!(status, EscrowStatus::Funded);
+    assert_eq!(payment_token.balance(&escrow_id), 1000);
+    assert_eq!(payment_token.balance(&buyer), 1000);
+}
+
+#[test]
+fn test_fund_escrow_signed_rejects_replayed_nonce() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id_a = Symbol::new(&env, "INV_SIG2A");
+    let invoice_id_b = Symbol::new(&env, "INV_SIG2B");
+    let amount = 500;
+
+    payment_token_asset.mint(&buyer, &2000);
+
+    escrow_client.create_escrow(
+        &invoice_id_a,
+        &seller,
+        &seller,
+        &amount,
+        &amount,
+        &1000000,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "signed_fund_replay_a"),
+    );
+    escrow_client.create_escrow(
+        &invoice_id_b,
+        &seller,
+        &seller,
+        &amount,
+        &amount,
+        &1000000,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "signed_fund_replay_b"),
+    );
+
+    escrow_client.fund_escrow_signed(&invoice_id_a, &buyer, &amount, &1u64);
+
+    // Reusing nonce 1 (even against a different invoice) must be rejected as a replay.
+    let result = escrow_client.try_fund_escrow_signed(&invoice_id_b, &buyer, &amount, &1u64);
+    assert_eq!(result, Err(Ok(Error::NonceAlreadyUsed)));
+
+    // A strictly increasing nonce is accepted.
+    escrow_client.fund_escrow_signed(&invoice_id_b, &buyer, &amount, &2u64);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id_b),
+        EscrowStatus::Funded
+    );
+}
+
+
+#[test]
 fn test_cleanup_escrow_removes_settled_record() {
     let env = Env::default();
     env.mock_all_auths();

@@ -13,6 +13,8 @@ pub enum StorageKey {
     Escrow(soroban_sdk::Symbol),
     /// Persistent: funder amounts by (invoice_id, funder_address).
     FunderAmount(soroban_sdk::Symbol, soroban_sdk::Address),
+    /// Persistent: highest nonce consumed for a signed off-chain approval, by buyer address.
+    Nonce(soroban_sdk::Address),
 }
 
 /// Global contract configuration.

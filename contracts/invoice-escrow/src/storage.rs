@@ -36,6 +36,21 @@ pub fn remove_escrow(env: &soroban_sdk::Env, inv_id: Symbol) {
     env.storage().persistent().remove(&StorageKey::Escrow(inv_id));
 }
 
+/// Get the highest nonce consumed so far for a buyer's signed off-chain approvals.
+pub fn get_nonce(env: &soroban_sdk::Env, buyer: &soroban_sdk::Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::Nonce(buyer.clone()))
+        .unwrap_or(0)
+}
+
+/// Record the highest nonce consumed for a buyer's signed off-chain approvals.
+pub fn set_nonce(env: &soroban_sdk::Env, buyer: &soroban_sdk::Address, nonce: u64) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Nonce(buyer.clone()), &nonce);
+}
+
 /// Get the amount funded by a specific funder for an invoice.
 pub fn get_funder_amount(
     env: &soroban_sdk::Env,
