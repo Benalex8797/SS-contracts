@@ -2229,3 +2229,119 @@ fn test_create_escrow_due_date_in_future_accepted() {
     assert_eq!(escrow_data.due_dt, future_due_date);
     assert_eq!(escrow_data.status, EscrowStatus::Created);
 }
+
+#[test]
+fn test_cleanup_escrow_removes_settled_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_CLEAN1");
+    let amount = 1000;
+
+    payment_token_asset.mint(&buyer, &1000);
+    payment_token_asset.mint(&payer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &amount,
+        &amount,
+        &1000000,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "cleanup_test"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
+    escrow_client.record_payment(&invoice_id, &payer, &amount);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Settled
+    );
+
+    escrow_client.cleanup_escrow(&invoice_id, &seller);
+
+    let result = escrow_client.try_get_escrow(&invoice_id);
+    assert_eq!(result, Err(Ok(Error::EscrowNotFound)));
+}
+
+#[test]
+fn test_cleanup_escrow_rejects_non_terminal_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
+
+    escrow_client.initialize(&admin, &300);
+
+    let invoice_id = Symbol::new(&env, "INV_CLEAN2");
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1000000,
+        &payment_token,
+        &inv_token,
+        &test_commitment(&env, "cleanup_non_terminal"),
+    );
+
+    let result = escrow_client.try_cleanup_escrow(&invoice_id, &seller);
+    assert_eq!(result, Err(Ok(Error::EscrowNotSettled)));
+}
+
+#[test]
+fn test_cleanup_escrow_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
+
+    escrow_client.initialize(&admin, &300);
+
+    let invoice_id = Symbol::new(&env, "INV_CLEAN3");
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1000000,
+        &payment_token,
+        &inv_token,
+        &test_commitment(&env, "cleanup_unauthorized"),
+    );
+    escrow_client.cancel_escrow(&invoice_id, &seller);
+
+    let result = escrow_client.try_cleanup_escrow(&invoice_id, &stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}

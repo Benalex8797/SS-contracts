@@ -40,4 +40,6 @@ pub enum Error {
     InvalidPayer = 16,
     /// Due date is invalid (e.g., in the past or zero).
     InvalidDueDate = 17,
+    /// Escrow is not yet in a terminal state (Settled, Refunded, or Cancelled) and cannot be cleaned up.
+    EscrowNotSettled = 19,
 }

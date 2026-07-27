@@ -72,6 +72,12 @@ pub fn escrow_cancelled(env: &Env, inv_id: Symbol, seller: &Address) {
         .publish((Symbol::new(env, "escrow_cancelled"),), (inv_id, seller));
 }
 
+/// Publish escrow_cleaned_up event once a terminal escrow's storage has been reclaimed.
+pub fn escrow_cleaned_up(env: &Env, inv_id: Symbol) {
+    env.events()
+        .publish((Symbol::new(env, "escrow_cleaned"),), inv_id);
+}
+
 /// Publish platform fee update event with old and new basis points.
 pub fn platform_fee_updated(env: &Env, old_fee_bps: u32, new_fee_bps: u32) {
     env.events().publish(

@@ -490,6 +490,29 @@ impl InvoiceEscrow {
         let config = storage::get_config(&env).ok_or(Error::NotInit)?;
         Ok(config.paused)
     }
+
+    /// Reclaim persistent storage for an escrow that has reached a terminal state
+    /// (Settled, Refunded, or Cancelled). Callable only by the seller or the admin.
+    /// The escrow and its per-funder contribution record are removed permanently;
+    /// terminal-state escrows are never mutated again, so this is safe to prune.
+    pub fn cleanup_escrow(env: Env, invoice_id: Symbol, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        let data = storage::get_escrow(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
+        if caller != data.seller && caller != config.admin {
+            return Err(Error::Unauthorized);
+        }
+        match data.status {
+            EscrowStatus::Settled | EscrowStatus::Refunded | EscrowStatus::Cancelled => {}
+            _ => return Err(Error::EscrowNotSettled),
+        }
+        if let Some(funder) = &data.funder {
+            storage::set_funder_amount(&env, invoice_id.clone(), funder, 0);
+        }
+        storage::remove_escrow(&env, invoice_id.clone());
+        events::escrow_cleaned_up(&env, invoice_id);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

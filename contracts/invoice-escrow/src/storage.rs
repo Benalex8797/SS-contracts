@@ -31,6 +31,11 @@ pub fn has_escrow(env: &soroban_sdk::Env, inv_id: Symbol) -> bool {
     env.storage().persistent().has(&StorageKey::Escrow(inv_id))
 }
 
+/// Remove escrow data for an invoice from persistent storage (storage footprint cleanup).
+pub fn remove_escrow(env: &soroban_sdk::Env, inv_id: Symbol) {
+    env.storage().persistent().remove(&StorageKey::Escrow(inv_id));
+}
+
 /// Get the amount funded by a specific funder for an invoice.
 pub fn get_funder_amount(
     env: &soroban_sdk::Env,
