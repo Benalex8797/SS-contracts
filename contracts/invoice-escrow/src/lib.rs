@@ -48,9 +48,43 @@ impl InvoiceEscrow {
             fee_bps: platform_fee_bps,
             payment_distributor: None,
             paused: false,
+            whitelist_enabled: false,
         };
         storage::set_config(&env, &config);
         Ok(())
+    }
+
+    /// Admin-only: enable/disable buyer whitelist enforcement on `fund_escrow`.
+    pub fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), Error> {
+        admin.require_auth();
+        let mut config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        if config.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        config.whitelist_enabled = enabled;
+        storage::set_config(&env, &config);
+        Ok(())
+    }
+
+    /// Admin-only: add or remove a buyer from the whitelist.
+    pub fn set_buyer_whitelisted(
+        env: Env,
+        admin: Address,
+        buyer: Address,
+        allowed: bool,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        if config.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_whitelisted(&env, &buyer, allowed);
+        Ok(())
+    }
+
+    /// View: is `buyer` whitelisted to fund escrows.
+    pub fn is_buyer_whitelisted(env: Env, buyer: Address) -> bool {
+        storage::is_whitelisted(&env, &buyer)
     }
 
     /// Create an escrow for an invoice. Caller (seller) must be authenticated.
@@ -103,7 +137,7 @@ impl InvoiceEscrow {
         storage::set_escrow(&env, invoice_id.clone(), &data);
         events::escrow_created(
             &env,
-            invoice_id,
+            invoice_id.clone(),
             &seller,
             &debtor,
             face_value,
@@ -112,6 +146,12 @@ impl InvoiceEscrow {
             &payment_token,
             &invoice_token,
             &commitment,
+        );
+        events::escrow_status_changed(
+            &env,
+            invoice_id,
+            EscrowStatus::Created,
+            current_timestamp,
         );
         Ok(())
     }
@@ -133,7 +173,13 @@ impl InvoiceEscrow {
         }
         data.status = EscrowStatus::Cancelled;
         storage::set_escrow(&env, invoice_id.clone(), &data);
-        events::escrow_cancelled(&env, invoice_id, &seller);
+        events::escrow_cancelled(&env, invoice_id.clone(), &seller);
+        events::escrow_status_changed(
+            &env,
+            invoice_id,
+            EscrowStatus::Cancelled,
+            env.ledger().timestamp(),
+        );
         Ok(())
     }
 
@@ -187,6 +233,9 @@ impl InvoiceEscrow {
         }
         let config = storage::get_config(env).ok_or(Error::NotInit)?;
         ensure_not_paused(&config)?;
+        if config.whitelist_enabled && !storage::is_whitelisted(&env, &buyer) {
+            return Err(Error::NotWhitelisted);
+        }
 
         let mut data =
             storage::get_escrow(env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
@@ -247,6 +296,14 @@ impl InvoiceEscrow {
             data.funded_amt,
             data.purchase_price,
         );
+        if data.status == EscrowStatus::Funded {
+            events::escrow_status_changed(
+                &env,
+                invoice_id,
+                EscrowStatus::Funded,
+                env.ledger().timestamp(),
+            );
+        }
         Ok(())
     }
 
@@ -375,7 +432,15 @@ impl InvoiceEscrow {
             );
         }
 
-        events::payment_settled(&env, invoice_id, amount, platform_fee, investor_amount);
+        events::payment_settled(&env, invoice_id.clone(), amount, platform_fee, investor_amount);
+        if data.status == EscrowStatus::Settled {
+            events::escrow_status_changed(
+                &env,
+                invoice_id,
+                EscrowStatus::Settled,
+                env.ledger().timestamp(),
+            );
+        }
         Ok(())
     }
 
@@ -461,7 +526,13 @@ impl InvoiceEscrow {
             soroban_sdk::vec![&env, contract.to_val(), false.into_val(&env)],
         );
 
-        events::escrow_refunded(&env, invoice_id, amount_to_refund);
+        events::escrow_refunded(&env, invoice_id.clone(), amount_to_refund);
+        events::escrow_status_changed(
+            &env,
+            invoice_id,
+            EscrowStatus::Refunded,
+            env.ledger().timestamp(),
+        );
         Ok(())
     }
 

@@ -2,6 +2,19 @@
 
 use soroban_sdk::{Address, Env, Symbol};
 
+use crate::types::EscrowStatus;
+
+/// Publish a lifecycle transition event carrying the new status and ledger
+/// timestamp, in addition to the narrower per-action events below. Lets
+/// off-chain indexers reconstruct full escrow lifecycle history/metadata
+/// from a single event stream instead of correlating five separate events.
+pub fn escrow_status_changed(env: &Env, inv_id: Symbol, status: EscrowStatus, timestamp: u64) {
+    env.events().publish(
+        (Symbol::new(env, "escrow_status_changed"),),
+        (inv_id, status as u32, timestamp),
+    );
+}
+
 /// Publish escrow_created event.
 pub fn escrow_created(
     env: &Env,

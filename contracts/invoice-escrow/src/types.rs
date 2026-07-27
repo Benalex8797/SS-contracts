@@ -29,6 +29,10 @@ pub struct Config {
     pub payment_distributor: Option<soroban_sdk::Address>,
     /// Emergency pause flag for lifecycle-changing operations.
     pub paused: bool,
+    /// When true, `fund_escrow` requires the buyer to be on the whitelist.
+    /// Defaults to false (opt-in) so existing deployments/tests are unaffected
+    /// until an admin explicitly enables it.
+    pub whitelist_enabled: bool,
 }
 
 /// Lifecycle status of an escrow.
