@@ -240,7 +240,7 @@ fn test_set_minter_event_emission() {
     client.set_minter(&new_minter);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
     let (_contract_addr, topics, data) = event;
     assert_eq!(
         topics,
@@ -382,7 +382,7 @@ fn test_mint_event_emission() {
 
     // Find mint event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -440,7 +440,7 @@ fn test_burn_event_emission() {
 
     // Find burn event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -490,7 +490,7 @@ fn test_transfer_from_event_emission() {
 
     // Find transfer event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -528,7 +528,7 @@ fn test_burn_from_event_emission() {
 
     // Find burn event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -627,8 +627,8 @@ fn test_no_transfer_event_on_locked_failure() {
     let events_after = env.events().all();
 
     // Check that no transfer event was emitted
-    for i in events_before..events_after.len() {
-        let event = &events_after.get(i).unwrap();
+    for i in events_before..events_after.events().len() {
+        let event = &events_after.events().get(i).unwrap();
         let (_addr, topics, _data) = event;
         if let Some(first_topic) = topics.get(0) {
             let symbol: Symbol = first_topic.try_into_val(&env).unwrap();
@@ -661,13 +661,13 @@ fn test_multiple_events_in_sequence() {
     let events = env.events().all();
 
     // Debug: check how many events we have
-    let event_count = events.len();
+    let event_count = events.events().len();
 
     // We expect at least 3 events (mint, transfer, burn)
     // But let's be flexible and just verify the last 3 events if they exist
     if event_count >= 3 {
         // Find and verify mint event (3rd from last)
-        let mint_event = events.iter().rev().nth(2).unwrap();
+        let mint_event = events.events().iter().rev().nth(2).unwrap();
         let (_addr1, topics1, _data1) = mint_event;
         assert_eq!(
             topics1,
@@ -675,7 +675,7 @@ fn test_multiple_events_in_sequence() {
         );
 
         // Find and verify transfer event (2nd from last)
-        let transfer_event = events.iter().rev().nth(1).unwrap();
+        let transfer_event = events.events().iter().rev().nth(1).unwrap();
         let (_addr2, topics2, _data2) = transfer_event;
         assert_eq!(
             topics2,
@@ -683,7 +683,7 @@ fn test_multiple_events_in_sequence() {
         );
 
         // Find and verify burn event (last)
-        let burn_event = events.last().unwrap();
+        let burn_event = events.events().last().unwrap();
         let (_addr3, topics3, _data3) = burn_event;
         assert_eq!(
             topics3,
