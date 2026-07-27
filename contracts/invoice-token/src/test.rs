@@ -201,7 +201,7 @@ fn test_set_transfer_locked_event_emission() {
     client.set_transfer_locked(&admin, &false);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
     let (_contract_addr, topics, data) = event;
     assert_eq!(
         topics,
@@ -323,7 +323,7 @@ fn test_transfer_event_emission() {
 
     // Find transfer event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -355,7 +355,7 @@ fn test_approve_event_emission() {
 
     // Find approve event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -617,7 +617,7 @@ fn test_no_transfer_event_on_locked_failure() {
     assert!(client.transfer_locked());
 
     let recipient = Address::generate(&env);
-    let events_before = env.events().all().len();
+    let events_before = env.events().all().events().len();
 
     // Try to transfer (should fail)
     let result = client.try_transfer(&user, &recipient, &100);

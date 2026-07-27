@@ -294,6 +294,46 @@ impl InvoiceToken {
         Ok(())
     }
 
+    /// Mint tokens to multiple addresses in a batch. Callable only by admin or minter.
+    /// `to` and `amounts` vectors must be of equal length. Each amount must be > 0.
+    pub fn mint_batch(env: Env, to: Vec<Address>, amounts: Vec<i128>, by: Address) -> Result<(), Error> {
+        by.require_auth();
+        if to.len() != amounts.len() {
+            return Err(Error::BatchLengthMismatch);
+        }
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
+        if by != meta.admin && by != meta.minter {
+            return Err(Error::Unauthorized);
+        }
+        // Validate amounts and compute total
+        let mut total_amount: i128 = 0;
+        for amt in amounts.iter() {
+            if *amt <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            total_amount = total_amount.checked_add(*amt).ok_or(Error::Overflow)?;
+        }
+        // Update total supply once
+        let new_total_supply = storage::get_total_supply(&env)
+            .checked_add(total_amount)
+            .ok_or(Error::Overflow)?;
+        storage::set_total_supply(&env, new_total_supply);
+        // Mint each recipient
+        for i in 0..to.len() {
+            let recipient = to.get(i).unwrap();
+            let amount = amounts.get(i).unwrap();
+            let new_bal = storage::get_balance(&env, recipient)
+                .checked_add(*amount)
+                .ok_or(Error::Overflow)?;
+            storage::set_balance(&env, recipient, new_bal);
+            events::mint_event(&env, recipient, *amount);
+        }
+        Ok(())
+    }
+
     /// Set transfer lock. Callable by admin or minter (escrow contract).
     /// When true, only admin can transfer; when false, all holders can transfer.
     pub fn set_transfer_locked(env: Env, caller: Address, locked: bool) -> Result<(), Error> {
