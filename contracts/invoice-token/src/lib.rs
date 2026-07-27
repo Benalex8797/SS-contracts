@@ -3,6 +3,8 @@
 //! Implements a fungible token representing fractional ownership of an invoice,
 //! with mint (admin/escrow), burn, allowances, and optional transfer lock.
 
+#![no_std]
+
 mod errors;
 mod events;
 mod storage;
@@ -11,7 +13,7 @@ mod types;
 use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;
-use crate::types::TokenMetadata;
+use crate::types::{TokenMetadata, MAX_DECIMALS};
 
 #[contract]
 pub struct InvoiceToken;
@@ -30,6 +32,9 @@ impl InvoiceToken {
     ) -> Result<(), Error> {
         if storage::get_metadata(&env).is_some() {
             return Err(Error::AlreadyInit);
+        }
+        if decimals > MAX_DECIMALS {
+            return Err(Error::InvalidDecimals);
         }
         let meta = TokenMetadata {
             admin: admin.clone(),
@@ -71,6 +76,16 @@ impl InvoiceToken {
     pub fn balance(env: Env, id: Address) -> Result<i128, Error> {
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(storage::get_balance(&env, &id))
+    }
+
+    /// Return balances for a batch of addresses, preserving the input order.
+    pub fn balance_batch(env: Env, ids: Vec<Address>) -> Result<Vec<i128>, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let mut balances = Vec::new(&env);
+        for id in ids.iter() {
+            balances.push_back(storage::get_balance(&env, &id));
+        }
+        Ok(balances)
     }
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> Result<i128, Error> {
@@ -127,6 +142,15 @@ impl InvoiceToken {
         }
         storage::set_allowance(&env, &from, &spender, amount, expiration_ledger);
         events::approve_event(&env, &from, &spender, amount, expiration_ledger);
+        Ok(())
+    }
+
+    /// Revoke `spender`'s allowance. Requires `from` authorization.
+    pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
+        from.require_auth();
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        storage::set_allowance(&env, &from, &spender, 0, 0);
+        events::approval_revoked_event(&env, &from, &spender);
         Ok(())
     }
 
@@ -333,6 +357,20 @@ impl InvoiceToken {
         meta.minter = new_minter;
         storage::set_metadata(&env, &meta);
         events::minter_updated_event(&env, &old_minter, &meta.minter);
+        Ok(())
+    }
+
+    /// Update the fractional precision for this invoice sub-asset. Admin only.
+    pub fn set_decimals(env: Env, decimals: u32) -> Result<(), Error> {
+        let mut meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        meta.admin.require_auth();
+        if decimals > MAX_DECIMALS {
+            return Err(Error::InvalidDecimals);
+        }
+        let old_decimals = meta.decimals;
+        meta.decimals = decimals;
+        storage::set_metadata(&env, &meta);
+        events::decimals_updated_event(&env, old_decimals, decimals);
         Ok(())
     }
 
