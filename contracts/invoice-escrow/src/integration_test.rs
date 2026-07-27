@@ -3,7 +3,7 @@ use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Bytes, BytesN, Env, String as SorobanString, Symbol,
+    Address, BytesN, Env, String as SorobanString, Symbol,
 };
 
 /// Helper function to create a test commitment hash (SHA-256 format)

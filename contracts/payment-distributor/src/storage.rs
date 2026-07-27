@@ -10,6 +10,16 @@ pub fn get_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&StorageKey::Admin)
 }
 
+pub fn set_fee_recipient(env: &Env, fee_recipient: &Address) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::FeeRecipient, fee_recipient);
+}
+
+pub fn get_fee_recipient(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&StorageKey::FeeRecipient)
+}
+
 pub fn get_distribution(
     env: &Env,
     escrow: &Address,

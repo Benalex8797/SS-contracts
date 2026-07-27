@@ -10,6 +10,7 @@ pub use types::DistributionState;
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
 use errors::Error;
+use types::MAX_FEE_BPS;
 
 const ESCROW_STATUS_FUNDED: u32 = 1;
 const ESCROW_STATUS_SETTLED: u32 = 2;
@@ -49,6 +50,9 @@ impl PaymentDistributor {
     /// 1. update its escrow state first,
     /// 2. transfer the settlement funds into this contract, and then
     /// 3. invoke this function as the configured distributor.
+    ///
+    /// Issue #132: Implements automated fee rounding loss minimization.
+    /// Rounding losses are allocated to the seller to ensure exact total distribution.
     pub fn distribute_payment(
         env: Env,
         escrow_contract: Address,
@@ -70,7 +74,13 @@ impl PaymentDistributor {
         let token = addresses.get(0).ok_or(Error::InvalidAmount)?;
         let seller = addresses.get(1).ok_or(Error::InvalidAmount)?;
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
-        let admin = addresses.get(3).ok_or(Error::InvalidAmount)?;
+        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
+        
+        // Issue #124: Validate fee BPS does not exceed maximum (10,000 = 100%)
+        if fee_bps_u32 > MAX_FEE_BPS {
+            return Err(Error::InvalidBps);
+        }
+
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
         let mut state = get_distribution_state(&env, &escrow_contract, &invoice_id);
         let payment_amount = paid_amount
@@ -80,35 +90,62 @@ impl PaymentDistributor {
         if payment_amount <= 0 {
             return Err(Error::NothingToDistribute);
         }
-        let seller_amount = amounts.get(1).ok_or(Error::InvalidAmount)?;
-        let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
-        let platform_fee = amounts.get(3).ok_or(Error::InvalidAmount)?;
-        if seller_amount != payment_amount {
-            return Err(Error::InvalidAmount);
-        }
-        let total_payer_distribution = investor_amount
-            .checked_add(platform_fee)
+
+        // Issue #132: Automated fee rounding loss minimization
+        // Calculate platform fee, investor amount, then allocate any rounding loss to seller
+        let platform_fee = (payment_amount as i128)
+            .checked_mul(fee_bps_u32 as i128)
+            .ok_or(Error::Overflow)?
+            .checked_div(10_000)
             .ok_or(Error::Overflow)?;
-        if total_payer_distribution != payment_amount {
+
+        let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
+        
+        // Seller receives: payment_amount - investor_amount - platform_fee
+        // This automatically absorbs any rounding loss
+        let seller_amount = payment_amount
+            .checked_sub(investor_amount)
+            .ok_or(Error::Overflow)?
+            .checked_sub(platform_fee)
+            .ok_or(Error::Overflow)?;
+
+        if seller_amount < 0 {
             return Err(Error::InvalidAmount);
         }
 
+        // Verify total distribution equals payment_amount exactly
+        let total_distribution = seller_amount
+            .checked_add(investor_amount)
+            .ok_or(Error::Overflow)?
+            .checked_add(platform_fee)
+            .ok_or(Error::Overflow)?;
+        
+        if total_distribution != payment_amount {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Issue #122: Use configured fee recipient (fallback to admin if not set)
+        let fee_recipient = storage::get_fee_recipient(&env)
+            .unwrap_or_else(|| storage::get_admin(&env).ok_or(Error::NotInit).unwrap());
+
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
+        
         token_client.transfer(&contract_addr, &seller, &seller_amount);
         token_client.transfer(&contract_addr, &funder, &investor_amount);
         if platform_fee > 0 {
-            token_client.transfer(&contract_addr, &admin, &platform_fee);
+            token_client.transfer(&contract_addr, &fee_recipient, &platform_fee);
         }
 
         state.paid_distributed = paid_amount;
         storage::set_distribution(&env, &escrow_contract, &invoice_id, &state);
 
+        // Issue #123: Enhanced structured payment distribution audit event
         events::payment_distributed(
             &env,
             &escrow_contract,
             &invoice_id,
-            &soroban_sdk::vec![&env, seller, funder, admin],
+            &soroban_sdk::vec![&env, seller, funder, fee_recipient],
             &soroban_sdk::vec![
                 &env,
                 seller_amount,
@@ -116,6 +153,7 @@ impl PaymentDistributor {
                 platform_fee,
                 paid_amount
             ],
+            escrow_status,
         );
 
         Ok(())
@@ -165,6 +203,30 @@ impl PaymentDistributor {
     /// View: return the current admin.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)
+    }
+
+    /// Issue #122: Set the fee recipient address for platform fees.
+    /// Only the admin can update the fee recipient.
+    /// Emits a fee_recipient_updated event for audit trails.
+    pub fn set_fee_recipient(env: Env, admin: Address, new_recipient: Address) -> Result<(), Error> {
+        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+
+        let old_recipient = storage::get_fee_recipient(&env);
+        storage::set_fee_recipient(&env, &new_recipient);
+        events::fee_recipient_updated(&env, old_recipient, &new_recipient);
+        Ok(())
+    }
+
+    /// View: return the current fee recipient (defaults to admin if not set).
+    pub fn get_fee_recipient(env: Env) -> Result<Address, Error> {
+        storage::get_admin(&env).ok_or(Error::NotInit)?;
+        Ok(storage::get_fee_recipient(&env).unwrap_or_else(|| {
+            storage::get_admin(&env).expect("Admin must be set")
+        }))
     }
 
     /// View: return tracked distribution progress for an escrow invoice.
