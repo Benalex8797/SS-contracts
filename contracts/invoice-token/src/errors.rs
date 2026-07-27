@@ -29,4 +29,6 @@ pub enum Error {
     InvalidExpiration = 10,
     /// Contract is paused and the requested operation is temporarily disabled.
     Paused = 11,
+    /// Token decimals exceed the supported sub-asset precision.
+    InvalidDecimals = 12,
 }

@@ -6,8 +6,12 @@ use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Env, String as SorobanString, Symbol,
+    Address, BytesN, Env, String as SorobanString, Symbol,
 };
+
+fn test_commitment(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0; 32])
+}
 
 struct TestContext<'a> {
     admin: Address,
@@ -78,7 +82,6 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> TestContext<'_
 
 fn create_and_fund(ctx: &TestContext<'_>, amount: i128, due_date: u64) {
     ctx.payment_asset.mint(&ctx.buyer, &amount);
-    let commitment = soroban_sdk::BytesN::from_array(&ctx.escrow.env, &[0u8; 32]);
     ctx.escrow.create_escrow(
         &ctx.invoice_id,
         &ctx.seller,
@@ -88,7 +91,7 @@ fn create_and_fund(ctx: &TestContext<'_>, amount: i128, due_date: u64) {
         &due_date,
         &ctx.payment_token.address,
         &ctx.inv_token.address,
-        &commitment,
+        &test_commitment(&ctx.escrow.env),
     );
     ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer, &amount);
 }
