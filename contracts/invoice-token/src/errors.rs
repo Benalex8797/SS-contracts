@@ -31,4 +31,8 @@ pub enum Error {
     Paused = 11,
     /// Token decimals exceed the supported sub-asset precision.
     InvalidDecimals = 12,
+    /// Token name or symbol metadata is empty (SEP-41 requires non-empty metadata).
+    InvalidMetadata = 13,
+    /// No allowance exists for (from, spender), so its expiration cannot be extended.
+    AllowanceNotFound = 14,
 }

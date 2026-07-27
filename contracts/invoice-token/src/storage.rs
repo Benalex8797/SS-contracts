@@ -194,3 +194,19 @@ pub fn append_token_history(
     history.push_back(record.clone());
     env.storage().persistent().set(&key, &history);
 }
+
+// ==================== Allowance Expiration Extension ====================
+
+/// Extend the expiration ledger of an existing allowance in place, leaving its amount untouched.
+pub fn extend_allowance_expiration(
+    env: &soroban_sdk::Env,
+    from: &Address,
+    spender: &Address,
+    new_expiration_ledger: u32,
+) {
+    let key = StorageKey::Allowance(from.clone(), spender.clone());
+    if let Some(mut data) = env.storage().persistent().get::<_, AllowanceData>(&key) {
+        data.expiration_ledger = new_expiration_ledger;
+        env.storage().persistent().set(&key, &data);
+    }
+}
