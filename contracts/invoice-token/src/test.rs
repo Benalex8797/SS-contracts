@@ -179,7 +179,7 @@ fn test_set_transfer_locked_event_emission() {
 
     let events = env.events().all();
     let event = events.events().last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let (_contract_addr, topics, data) = *event;
     assert_eq!(
         topics,
         (Symbol::new(&env, "transfer_locked_updated"),).into_val(&env)
@@ -216,7 +216,7 @@ fn test_set_minter_event_emission() {
 
     let events = env.events().all();
     let event = events.events().last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let (_contract_addr, topics, data) = *event;
     assert_eq!(
         topics,
         (Symbol::new(&env, "minter_updated"),).into_val(&env)
@@ -290,7 +290,7 @@ fn test_transfer_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (_contract_addr, topics, data) = event;
+    let (_contract_addr, topics, data) = *event;
 
     assert_eq!(
         topics,
@@ -345,8 +345,9 @@ fn test_mint_event_emission() {
     client.mint(&recipient, &amount, &minter);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let event = events.events().last().unwrap();
+
+    let (_contract_addr, topics, data) = *event;
 
     assert_eq!(
         topics,
@@ -395,8 +396,9 @@ fn test_burn_event_emission() {
     client.burn(&admin, &burn_amount);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let event = events.events().last().unwrap();
+
+    let (_contract_addr, topics, data) = *event;
 
     assert_eq!(
         topics,
@@ -438,8 +440,9 @@ fn test_transfer_from_event_emission() {
     client.transfer_from(&spender, &admin, &recipient, &200);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let event = events.events().last().unwrap();
+
+    let (_contract_addr, topics, data) = *event;
 
     assert_eq!(
         topics,
@@ -471,8 +474,9 @@ fn test_burn_from_event_emission() {
     client.burn_from(&spender, &admin, &burn_amount);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let event = events.events().last().unwrap();
+
+    let (_contract_addr, topics, data) = *event;
 
     assert_eq!(
         topics,
@@ -591,22 +595,25 @@ fn test_multiple_events_in_sequence() {
     let event_count = events.len();
 
     if event_count >= 3 {
-        let mint_event = events.iter().rev().nth(2).unwrap();
-        let (_addr1, topics1, _data1) = mint_event;
+        // Find and verify mint event (3rd from last)
+        let mint_event = events.events().iter().rev().nth(2).unwrap();
+        let (_addr1, topics1, _data1) = *mint_event;
         assert_eq!(
             topics1,
             (Symbol::new(&env, "mint"), user1.clone()).into_val(&env)
         );
 
-        let transfer_event = events.iter().rev().nth(1).unwrap();
-        let (_addr2, topics2, _data2) = transfer_event;
+        // Find and verify transfer event (2nd from last)
+        let transfer_event = events.events().iter().rev().nth(1).unwrap();
+        let (_addr2, topics2, _data2) = *transfer_event;
         assert_eq!(
             topics2,
             (Symbol::new(&env, "transfer"), user1.clone(), user2.clone()).into_val(&env)
         );
 
-        let burn_event = events.last().unwrap();
-        let (_addr3, topics3, _data3) = burn_event;
+        // Find and verify burn event (last)
+        let burn_event = events.events().last().unwrap();
+        let (_addr3, topics3, _data3) = *burn_event;
         assert_eq!(
             topics3,
             (Symbol::new(&env, "burn"), user2.clone()).into_val(&env)
