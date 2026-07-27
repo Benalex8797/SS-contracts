@@ -18,9 +18,25 @@ cargo clippy --all-targets --all-features -- -D warnings
 # 3. Run all unit and integration tests across all workspace contracts
 cargo test --all --verbose
 
-# 4. Build release WASM binaries for target wasm32-unknown-unknown
+# 4. Audit dependency vulnerabilities against the RustSec advisory database
+cargo audit
+
+# 5. Build release WASM binaries for target wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown
 ```
+
+---
+
+## 🔐 Dependency Vulnerability Triage
+
+CI runs `cargo audit` on every Pull Request targeting `dev` and every push to `dev`. When an advisory is reported:
+
+1. Confirm the affected crate, version range, and advisory details in the RustSec database.
+2. Prefer upgrading the vulnerable dependency or its direct parent dependency in the same Pull Request.
+3. If no patched version is available, document the impact analysis, affected code paths, and mitigation plan in the Pull Request before requesting review.
+4. Do not add advisory ignores unless the advisory is demonstrably unreachable or a maintainer approves a temporary exception with a tracked follow-up issue.
+
+Run `cargo install cargo-audit --locked` once locally if the `cargo audit` command is unavailable.
 
 ---
 
