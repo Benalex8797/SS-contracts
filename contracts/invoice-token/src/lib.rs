@@ -3,6 +3,8 @@
 //! Implements a fungible token representing fractional ownership of an invoice,
 //! with mint (admin/escrow), burn, allowances, and optional transfer lock.
 
+#![no_std]
+
 mod errors;
 mod events;
 mod storage;
