@@ -1281,3 +1281,34 @@ fn test_pause_blocks_burn_and_burn_from() {
     assert_eq!(client.total_supply(), 100);
     assert_eq!(client.allowance(&admin, &spender), 100);
 }
+
+#[test]
+fn test_initialize_rejects_empty_name() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let empty_name = SorobanString::from_str(&env, "");
+    let symbol = SorobanString::from_str(&env, "INV001");
+    let invoice_id = Symbol::new(&env, "inv_001");
+
+    let result = client.try_initialize(&admin, &empty_name, &symbol, &7u32, &invoice_id, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidMetadata)));
+}
+
+#[test]
+fn test_initialize_rejects_empty_symbol() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice INV-001");
+    let empty_symbol = SorobanString::from_str(&env, "");
+    let invoice_id = Symbol::new(&env, "inv_001");
+
+    let result =
+        client.try_initialize(&admin, &name, &empty_symbol, &7u32, &invoice_id, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidMetadata)));
+}

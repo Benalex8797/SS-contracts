@@ -37,6 +37,10 @@ impl InvoiceToken {
         if decimals > MAX_DECIMALS {
             return Err(Error::InvalidDecimals);
         }
+        // SEP-41 metadata (name, symbol) must be meaningful, not empty placeholders.
+        if name.is_empty() || symbol.is_empty() {
+            return Err(Error::InvalidMetadata);
+        }
         let meta = TokenMetadata {
             admin: admin.clone(),
             minter: minter.clone(),
