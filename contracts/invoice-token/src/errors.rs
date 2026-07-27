@@ -29,14 +29,6 @@ pub enum Error {
     InvalidExpiration = 10,
     /// Contract is paused and the requested operation is temporarily disabled.
     Paused = 11,
-    /// Fee basis points is out of valid range (0..=10_000).
-    InvalidFeeBps = 12,
-    /// Insufficient balance to cover fee deduction.
-    InsufficientBalanceForFee = 13,
-    /// Role has not been assigned for the given admin.
-    RoleNotGranted = 14,
-    /// The specified role does not exist in the contract.
-    InvalidRole = 15,
-    /// Token ownership history record not found.
-    HistoryNotFound = 16,
+    /// Token decimals exceed the supported sub-asset precision.
+    InvalidDecimals = 12,
 }

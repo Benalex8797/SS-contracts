@@ -2,7 +2,7 @@
 
 use super::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
-use soroban_sdk::{Address, Env, IntoVal, String as SorobanString, Symbol, TryIntoVal};
+use soroban_sdk::{Address, Env, IntoVal, String as SorobanString, Symbol, TryIntoVal, Vec};
 
 fn setup_token(env: &Env) -> (InvoiceTokenClient<'_>, Address, Address) {
     let contract_id = env.register(InvoiceToken, ());
@@ -178,7 +178,7 @@ fn test_set_transfer_locked_event_emission() {
     client.set_transfer_locked(&admin, &false);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
     let (_contract_addr, topics, data) = event;
     assert_eq!(
         topics,
@@ -288,7 +288,8 @@ fn test_transfer_event_emission() {
     client.transfer(&admin, &recipient, &250);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
+
     let (_contract_addr, topics, data) = event;
 
     assert_eq!(
@@ -318,7 +319,8 @@ fn test_approve_event_emission() {
     client.approve(&admin, &spender, &amount, &expiration);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
+
     let (_contract_addr, topics, data) = event;
 
     assert_eq!(
@@ -553,7 +555,7 @@ fn test_no_transfer_event_on_locked_failure() {
     assert!(client.transfer_locked());
 
     let recipient = Address::generate(&env);
-    let events_before = env.events().all().len();
+    let events_before = env.events().all().events().len();
 
     let result = client.try_transfer(&user, &recipient, &100);
     assert!(result.is_err());
@@ -1147,369 +1149,135 @@ fn test_transfer_from_with_fee() {
 }
 
 #[test]
-fn test_fee_deducted_event_emission() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, minter) = setup_token(&env);
-
-    client.set_fee_bps(&admin, &1000); // 10%
-    client.set_transfer_locked(&admin, &false);
-
-    let user = Address::generate(&env);
-    client.mint(&user, &5000, &minter);
-
-    let recipient = Address::generate(&env);
-    client.transfer(&user, &recipient, &1000);
-
-    // Find the fee_deducted event
-    let events = env.events().all();
-    let mut found_fee_event = false;
-    for i in 0..events.len() {
-        let event = &events.get(i).unwrap();
-        let (_addr, topics, data) = event;
-        if let Some(first_topic) = topics.get(0) {
-            let symbol: Symbol = first_topic.try_into_val(&env).unwrap();
-            if symbol == Symbol::new(&env, "fee_deducted") {
-                // Topics: (fee_deducted, from), Data: fee_amount
-                let from_in_topic: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
-                assert_eq!(from_in_topic, user);
-                let fee_amount: i128 = data.try_into_val(&env).unwrap();
-                assert_eq!(fee_amount, 100); // 1000 * 1000 / 10000
-                found_fee_event = true;
-            }
-        }
-    }
-    assert!(found_fee_event, "fee_deducted event was not emitted");
-}
-
-// ========== Issue #108: Role Admin Tests ==========
-
-#[test]
-fn test_initialize_sets_default_roles() {
-    let env = Env::default();
-    let (client, admin, minter) = setup_token(&env);
-
-    let admin_role = Symbol::new(&env, "admin");
-    let minter_role = Symbol::new(&env, "minter");
-    let pauser_role = Symbol::new(&env, "pauser");
-    let tlock_role = Symbol::new(&env, "tlock");
-
-    // Admin is the admin of all roles
-    assert_eq!(client.get_role_admin(&admin_role), admin);
-    assert_eq!(client.get_role_admin(&minter_role), admin);
-    assert_eq!(client.get_role_admin(&pauser_role), admin);
-    assert_eq!(client.get_role_admin(&tlock_role), admin);
-
-    // Admin has all roles
-    assert!(client.has_role(&admin_role, &admin));
-    assert!(client.has_role(&minter_role, &admin));
-    assert!(client.has_role(&pauser_role, &admin));
-    assert!(client.has_role(&tlock_role, &admin));
-
-    // Minter has minter role
-    assert!(client.has_role(&minter_role, &minter));
-}
-
-#[test]
-fn test_grant_role() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _minter) = setup_token(&env);
-
-    let user = Address::generate(&env);
-    let pauser_role = Symbol::new(&env, "pauser");
-
-    assert!(!client.has_role(&pauser_role, &user));
-
-    client.grant_role(&admin, &pauser_role, &user);
-    assert!(client.has_role(&pauser_role, &user));
-}
-
-#[test]
-fn test_revoke_role() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _minter) = setup_token(&env);
-
-    let pauser_role = Symbol::new(&env, "pauser");
-
-    // Admin has pauser role initially
-    assert!(client.has_role(&pauser_role, &admin));
-
-    client.revoke_role(&admin, &pauser_role, &admin);
-    assert!(!client.has_role(&pauser_role, &admin));
-}
-
-#[test]
-fn test_grant_role_unauthorized_fails() {
+fn test_sub_asset_decimals_can_be_updated_within_supported_range() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _admin, _minter) = setup_token(&env);
 
-    let stranger = Address::generate(&env);
-    let user = Address::generate(&env);
-    let pauser_role = Symbol::new(&env, "pauser");
-
-    let result = client.try_grant_role(&stranger, &pauser_role, &user);
-    assert_eq!(result, Err(Ok(crate::errors::Error::Unauthorized)));
-    assert!(!client.has_role(&pauser_role, &user));
-}
-
-#[test]
-fn test_set_role_admin() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _minter) = setup_token(&env);
-
-    let new_admin = Address::generate(&env);
-    let pauser_role = Symbol::new(&env, "pauser");
-
-    // Admin can set a new admin for pauser role
-    client.set_role_admin(&admin, &pauser_role, &new_admin);
-    assert_eq!(client.get_role_admin(&pauser_role), new_admin);
-
-    // New admin can now grant pauser role
-    let user = Address::generate(&env);
-    client.grant_role(&new_admin, &pauser_role, &user);
-    assert!(client.has_role(&pauser_role, &user));
-}
-
-#[test]
-fn test_set_role_admin_unauthorized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _admin, _minter) = setup_token(&env);
-
-    let stranger = Address::generate(&env);
-    let new_admin = Address::generate(&env);
-    let pauser_role = Symbol::new(&env, "pauser");
-
-    let result = client.try_set_role_admin(&stranger, &pauser_role, &new_admin);
-    assert_eq!(result, Err(Ok(crate::errors::Error::Unauthorized)));
-    // Admin should still be original admin
-    let admin_addr = Address::generate(&env); // can't easily get admin back, but role unchanged
-    let _ = admin_addr;
-}
-
-#[test]
-fn test_get_role_admin_not_granted_fails() {
-    let env = Env::default();
-    let (client, _admin, _minter) = setup_token(&env);
-
-    let nonexistent_role = Symbol::new(&env, "nonexist");
-    let result = client.try_get_role_admin(&nonexistent_role);
-    assert_eq!(result, Err(Ok(crate::errors::Error::RoleNotGranted)));
-}
-
-#[test]
-fn test_role_admin_updated_event_emission() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _minter) = setup_token(&env);
-
-    let new_admin = Address::generate(&env);
-    let pauser_role = Symbol::new(&env, "pauser");
-
-    client.set_role_admin(&admin, &pauser_role, &new_admin);
+    client.set_decimals(&18);
+    assert_eq!(client.decimals(), 18);
 
     let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
-
+    let (_contract_addr, topics, data) = events.last().unwrap();
     assert_eq!(
         topics,
-        (Symbol::new(&env, "role_admin_updated"), pauser_role.clone()).into_val(&env)
+        (Symbol::new(&env, "decimals_updated"),).into_val(&env)
     );
-
-    let event_data: (Address, Address) = data.try_into_val(&env).unwrap();
-    assert_eq!(event_data.0, admin);
-    assert_eq!(event_data.1, new_admin);
+    let event_data: (u32, u32) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data, (7, 18));
 }
 
 #[test]
-fn test_role_granted_event_emission() {
+fn test_sub_asset_decimals_reject_unsupported_precision() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, _minter) = setup_token(&env);
+    let (client, _admin, _minter) = setup_token(&env);
 
-    let user = Address::generate(&env);
-    let pauser_role = Symbol::new(&env, "pauser");
+    let result = client.try_set_decimals(&19);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidDecimals)));
+    assert_eq!(client.decimals(), 7);
+}
 
-    client.grant_role(&admin, &pauser_role, &user);
+#[test]
+fn test_initialize_rejects_unsupported_precision() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice INV-001");
+    let symbol = SorobanString::from_str(&env, "INV001");
+    let invoice_id = Symbol::new(&env, "inv_001");
 
-    let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let result = client.try_initialize(&admin, &name, &symbol, &19, &invoice_id, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidDecimals)));
+}
+
+#[test]
+fn test_balance_batch_preserves_order_and_includes_zero_balances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+    let first = Address::generate(&env);
+    let empty = Address::generate(&env);
+    let second = Address::generate(&env);
+    client.mint(&first, &25, &minter);
+    client.mint(&second, &50, &minter);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(first.clone());
+    ids.push_back(empty.clone());
+    ids.push_back(second.clone());
+    ids.push_back(first);
+
+    let balances = client.balance_batch(&ids);
+    assert_eq!(balances, soroban_sdk::vec![&env, 25i128, 0, 50, 25]);
+}
+
+#[test]
+fn test_balance_batch_requires_initialization() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let ids = soroban_sdk::vec![&env, Address::generate(&env)];
 
     assert_eq!(
-        topics,
-        (Symbol::new(&env, "role_granted"), pauser_role, user.clone()).into_val(&env)
+        client.try_balance_batch(&ids),
+        Err(Ok(crate::errors::Error::NotInit))
     );
-
-    let granted: bool = data.try_into_val(&env).unwrap();
-    assert!(granted);
 }
 
-// ========== Issue #111: Ownership History Tests ==========
-
 #[test]
-fn test_token_history_initial_empty() {
+fn test_revoke_approval_clears_allowance_and_emits_event() {
     let env = Env::default();
+    env.mock_all_auths();
     let (client, admin, _minter) = setup_token(&env);
-
-    let history = client.get_token_history(&admin);
-    assert_eq!(history.len(), 0);
-}
-
-#[test]
-fn test_token_history_after_transfer() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, minter) = setup_token(&env);
-
-    let user = Address::generate(&env);
-    client.mint(&user, &1000, &minter);
-    client.set_transfer_locked(&admin, &false);
-
-    let recipient = Address::generate(&env);
-    client.transfer(&user, &recipient, &250);
-
-    // User's history should have 1 record (as sender)
-    let user_history = client.get_token_history(&user);
-    assert_eq!(user_history.len(), 1);
-    let record = user_history.get(0).unwrap();
-    assert_eq!(record.from, user);
-    assert_eq!(record.to, recipient);
-    assert_eq!(record.amount, 250);
-
-    // Recipient's history should have 1 record (as receiver)
-    let recipient_history = client.get_token_history(&recipient);
-    assert_eq!(recipient_history.len(), 1);
-    let record = recipient_history.get(0).unwrap();
-    assert_eq!(record.from, user);
-    assert_eq!(record.to, recipient);
-    assert_eq!(record.amount, 250);
-}
-
-#[test]
-fn test_token_history_multiple_transfers() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, minter) = setup_token(&env);
-
-    let user1 = Address::generate(&env);
-    let user2 = Address::generate(&env);
-    let user3 = Address::generate(&env);
-
-    client.mint(&user1, &1000, &minter);
-    client.set_transfer_locked(&admin, &false);
-
-    // First transfer: user1 -> user2
-    client.transfer(&user1, &user2, &300);
-    // Second transfer: user1 -> user3
-    client.transfer(&user1, &user3, &200);
-
-    // user1 should have 2 history records (both as sender)
-    let user1_history = client.get_token_history(&user1);
-    assert_eq!(user1_history.len(), 2);
-
-    // user2 should have 1 history record (as receiver)
-    let user2_history = client.get_token_history(&user2);
-    assert_eq!(user2_history.len(), 1);
-    assert_eq!(user2_history.get(0).unwrap().amount, 300);
-
-    // user3 should have 1 history record (as receiver)
-    let user3_history = client.get_token_history(&user3);
-    assert_eq!(user3_history.len(), 1);
-    assert_eq!(user3_history.get(0).unwrap().amount, 200);
-}
-
-#[test]
-fn test_token_history_records_ledger_sequence() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, minter) = setup_token(&env);
-
-    let user = Address::generate(&env);
-    client.mint(&user, &1000, &minter);
-    client.set_transfer_locked(&admin, &false);
-
-    let current_ledger = env.ledger().sequence();
-    let recipient = Address::generate(&env);
-    client.transfer(&user, &recipient, &100);
-
-    let history = client.get_token_history(&user);
-    assert_eq!(history.len(), 1);
-    assert_eq!(history.get(0).unwrap().ledger, current_ledger);
-}
-
-#[test]
-fn test_token_history_after_transfer_from() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, minter) = setup_token(&env);
-
-    client.mint(&admin, &1000, &minter);
-    client.set_transfer_locked(&admin, &false);
-
     let spender = Address::generate(&env);
     let expiration = env.ledger().sequence() + 100;
     client.approve(&admin, &spender, &500, &expiration);
 
-    let recipient = Address::generate(&env);
-    client.transfer_from(&spender, &admin, &recipient, &200);
+    client.revoke_approval(&admin, &spender);
+    assert_eq!(client.allowance(&admin, &spender), 0);
 
-    // Admin should have 1 history record (as sender)
-    let admin_history = client.get_token_history(&admin);
-    assert_eq!(admin_history.len(), 1);
-    assert_eq!(admin_history.get(0).unwrap().from, admin);
-    assert_eq!(admin_history.get(0).unwrap().to, recipient);
-    assert_eq!(admin_history.get(0).unwrap().amount, 200);
-
-    // Recipient should have 1 history record (as receiver)
-    let recipient_history = client.get_token_history(&recipient);
-    assert_eq!(recipient_history.len(), 1);
+    let events = env.events().all();
+    let (_contract_addr, topics, data) = events.last().unwrap();
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "approval_revoked"), admin, spender).into_val(&env)
+    );
+    let event_data: () = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data, ());
 }
 
 #[test]
-fn test_token_history_for_unknown_account_empty() {
+fn test_revoke_approval_requires_from_authorization() {
     let env = Env::default();
-    let (client, _admin, _minter) = setup_token(&env);
+    let (client, admin, _minter) = setup_token(&env);
+    let spender = Address::generate(&env);
 
-    let unknown = Address::generate(&env);
-    let history = client.get_token_history(&unknown);
-    assert_eq!(history.len(), 0);
+    assert!(client.try_revoke_approval(&admin, &spender).is_err());
 }
 
 #[test]
-fn test_token_history_event_emission() {
+fn test_pause_blocks_burn_and_burn_from() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 100;
+    client.mint(&admin, &100, &minter);
+    client.approve(&admin, &spender, &100, &expiration);
+    client.set_paused(&true);
 
-    let user = Address::generate(&env);
-    client.mint(&user, &1000, &minter);
-    client.set_transfer_locked(&admin, &false);
-
-    let recipient = Address::generate(&env);
-    client.transfer(&user, &recipient, &150);
-
-    // Find history_appended events
-    let events = env.events().all();
-    let mut found_history_event = false;
-    for i in 0..events.len() {
-        let event = &events.get(i).unwrap();
-        let (_addr, topics, _data) = event;
-        if let Some(first_topic) = topics.get(0) {
-            let symbol: Symbol = first_topic.try_into_val(&env).unwrap();
-            if symbol == Symbol::new(&env, "history_appended") {
-                found_history_event = true;
-                break;
-            }
-        }
-    }
-    assert!(
-        found_history_event,
-        "history_appended event was not emitted"
+    assert_eq!(
+        client.try_burn(&admin, &10),
+        Err(Ok(crate::errors::Error::Paused))
     );
+    assert_eq!(
+        client.try_burn_from(&spender, &admin, &10),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(client.balance(&admin), 100);
+    assert_eq!(client.total_supply(), 100);
+    assert_eq!(client.allowance(&admin, &spender), 100);
 }

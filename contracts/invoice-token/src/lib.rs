@@ -4,24 +4,17 @@
 //! with mint (admin/escrow), burn, allowances, optional transfer lock,
 //! fee deduction, role-based admin, nonce tracking, and ownership history.
 
+#![no_std]
+
 mod errors;
 mod events;
 mod storage;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol};
+use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;
-use crate::types::{OwnershipHistoryRecord, TokenMetadata};
-
-/// Admin role symbol used for role-based access control.
-pub const ADMIN_ROLE: &str = "admin";
-/// Minter role symbol.
-pub const MINTER_ROLE: &str = "minter";
-/// Pauser role symbol (can pause/unpause the contract).
-pub const PAUSER_ROLE: &str = "pauser";
-/// TransferLocker role symbol (can toggle transfer lock).
-pub const TRANSFER_LOCKER_ROLE: &str = "tlock";
+use crate::types::{TokenMetadata, MAX_DECIMALS};
 
 #[contract]
 pub struct InvoiceToken;
@@ -40,6 +33,9 @@ impl InvoiceToken {
     ) -> Result<(), Error> {
         if storage::get_metadata(&env).is_some() {
             return Err(Error::AlreadyInit);
+        }
+        if decimals > MAX_DECIMALS {
+            return Err(Error::InvalidDecimals);
         }
         let meta = TokenMetadata {
             admin: admin.clone(),
@@ -102,6 +98,16 @@ impl InvoiceToken {
     pub fn balance(env: Env, id: Address) -> Result<i128, Error> {
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(storage::get_balance(&env, &id))
+    }
+
+    /// Return balances for a batch of addresses, preserving the input order.
+    pub fn balance_batch(env: Env, ids: Vec<Address>) -> Result<Vec<i128>, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let mut balances = Vec::new(&env);
+        for id in ids.iter() {
+            balances.push_back(storage::get_balance(&env, &id));
+        }
+        Ok(balances)
     }
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> Result<i128, Error> {
@@ -208,6 +214,15 @@ impl InvoiceToken {
         }
         storage::set_allowance(&env, &from, &spender, amount, expiration_ledger);
         events::approve_event(&env, &from, &spender, amount, expiration_ledger);
+        Ok(())
+    }
+
+    /// Revoke `spender`'s allowance. Requires `from` authorization.
+    pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
+        from.require_auth();
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        storage::set_allowance(&env, &from, &spender, 0, 0);
+        events::approval_revoked_event(&env, &from, &spender);
         Ok(())
     }
 
@@ -388,6 +403,46 @@ impl InvoiceToken {
         Ok(())
     }
 
+    /// Mint tokens to multiple addresses in a batch. Callable only by admin or minter.
+    /// `to` and `amounts` vectors must be of equal length. Each amount must be > 0.
+    pub fn mint_batch(env: Env, to: Vec<Address>, amounts: Vec<i128>, by: Address) -> Result<(), Error> {
+        by.require_auth();
+        if to.len() != amounts.len() {
+            return Err(Error::BatchLengthMismatch);
+        }
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
+        if by != meta.admin && by != meta.minter {
+            return Err(Error::Unauthorized);
+        }
+        // Validate amounts and compute total
+        let mut total_amount: i128 = 0;
+        for amt in amounts.iter() {
+            if *amt <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            total_amount = total_amount.checked_add(*amt).ok_or(Error::Overflow)?;
+        }
+        // Update total supply once
+        let new_total_supply = storage::get_total_supply(&env)
+            .checked_add(total_amount)
+            .ok_or(Error::Overflow)?;
+        storage::set_total_supply(&env, new_total_supply);
+        // Mint each recipient
+        for i in 0..to.len() {
+            let recipient = to.get(i).unwrap();
+            let amount = amounts.get(i).unwrap();
+            let new_bal = storage::get_balance(&env, recipient)
+                .checked_add(*amount)
+                .ok_or(Error::Overflow)?;
+            storage::set_balance(&env, recipient, new_bal);
+            events::mint_event(&env, recipient, *amount);
+        }
+        Ok(())
+    }
+
     /// Set transfer lock. Callable by admin or minter (escrow contract).
     /// When true, only admin can transfer; when false, all holders can transfer.
     pub fn set_transfer_locked(env: Env, caller: Address, locked: bool) -> Result<(), Error> {
@@ -417,6 +472,20 @@ impl InvoiceToken {
         storage::set_role_grant(&env, &minter_role, &new_minter, true);
 
         events::minter_updated_event(&env, &old_minter, &meta.minter);
+        Ok(())
+    }
+
+    /// Update the fractional precision for this invoice sub-asset. Admin only.
+    pub fn set_decimals(env: Env, decimals: u32) -> Result<(), Error> {
+        let mut meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        meta.admin.require_auth();
+        if decimals > MAX_DECIMALS {
+            return Err(Error::InvalidDecimals);
+        }
+        let old_decimals = meta.decimals;
+        meta.decimals = decimals;
+        storage::set_metadata(&env, &meta);
+        events::decimals_updated_event(&env, old_decimals, decimals);
         Ok(())
     }
 

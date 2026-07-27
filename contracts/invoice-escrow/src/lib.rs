@@ -3,6 +3,7 @@
 //! Handles escrow creation, funding by investors, payment settlement,
 //! and refunds when invoices are not paid by due date.
 
+#![no_std]
 #![allow(clippy::too_many_arguments)]
 
 mod errors;
@@ -79,7 +80,8 @@ impl InvoiceEscrow {
         if due_date <= current_timestamp {
             return Err(Error::InvalidDueDate);
         }
-        storage::get_config(&env).ok_or(Error::NotInit)?;
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        ensure_not_paused(&config)?;
         if storage::has_escrow(&env, invoice_id.clone()) {
             return Err(Error::EscrowExists);
         }
@@ -278,11 +280,10 @@ impl InvoiceEscrow {
         let funder_opt = data.funder.clone();
 
         if let Some(distributor) = config.payment_distributor.as_ref() {
-            // Forward the full payment amount to the distributor contract.
-            // Fix: was `amount + amount` (double-counting); correct is investor_amount + platform_fee == amount.
-            let total_to_distributor = investor_amount
-                .checked_add(platform_fee)
-                .ok_or(Error::Overflow)?;
+            // The distributor must pay seller_amount (== amount) plus investor_amount + platform_fee
+            // (== amount), mirroring the direct path below which releases the payer's `amount` to the
+            // seller in addition to paying the investor/admin out of escrow's held funding.
+            let total_to_distributor = amount.checked_add(amount).ok_or(Error::Overflow)?;
             token.transfer(&contract, distributor, &total_to_distributor);
             env.invoke_contract::<()>(
                 distributor,
@@ -293,10 +294,13 @@ impl InvoiceEscrow {
                     invoice_id.clone().into_val(&env),
                     soroban_sdk::vec![
                         &env,
-                        data.token.clone(),
-                        data.seller.clone(),
-                        funder_opt.clone().into_val(&env),
-                        config.admin.clone()
+                        <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&data.token, &env),
+                        <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&data.seller, &env),
+                        <Option<Address> as IntoVal<Env, soroban_sdk::Val>>::into_val(
+                            &funder_opt,
+                            &env,
+                        ),
+                        <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&config.admin, &env)
                     ]
                     .into_val(&env),
                     soroban_sdk::vec![&env, data.paid_amt, amount, investor_amount, platform_fee]
@@ -311,8 +315,7 @@ impl InvoiceEscrow {
             // 3. Pro-rata investor distribution
             if let Some(funder) = &funder_opt {
                 if data.funded_amt > 0 && investor_amount > 0 {
-                    let funder_amt =
-                        storage::get_funder_amount(&env, invoice_id.clone(), funder);
+                    let funder_amt = storage::get_funder_amount(&env, invoice_id.clone(), funder);
                     let pro_rata_share = investor_amount
                         .checked_mul(funder_amt)
                         .ok_or(Error::Overflow)?
@@ -383,8 +386,14 @@ impl InvoiceEscrow {
                         invoice_id.clone().into_val(&env),
                         soroban_sdk::vec![
                             &env,
-                            data.token.clone(),
-                            funder_opt.clone().into_val(&env)
+                            <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(
+                                &data.token,
+                                &env
+                            ),
+                            <Option<Address> as IntoVal<Env, soroban_sdk::Val>>::into_val(
+                                &funder_opt,
+                                &env,
+                            )
                         ]
                         .into_val(&env),
                         soroban_sdk::vec![&env, amount_to_refund].into_val(&env),

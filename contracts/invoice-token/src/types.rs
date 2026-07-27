@@ -3,6 +3,9 @@
 
 use soroban_sdk::contracttype;
 
+/// Largest supported number of fractional digits for an invoice sub-asset.
+pub const MAX_DECIMALS: u32 = 18;
+
 /// Storage key enum for instance and persistent storage.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
