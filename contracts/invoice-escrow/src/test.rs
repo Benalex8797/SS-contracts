@@ -2717,3 +2717,255 @@ fn test_create_escrow_due_date_in_future_accepted() {
     assert_eq!(escrow_data.due_dt, future_due_date);
     assert_eq!(escrow_data.status, EscrowStatus::Created);
 }
+
+// ── Overdue Escrow / Dispute Expiration Tests (#140) ─────────────────────────
+
+#[test]
+fn test_refund_long_overdue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_LONG");
+    let due_date = 1000;
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
+        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "long_overdue"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Set time far past due date (1000x overdue)
+    env.ledger().with_mut(|li| li.timestamp = due_date * 1000);
+
+    escrow_client.refund(&invoice_id);
+
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Refunded
+    );
+    assert_eq!(payment_token.balance(&buyer), 1000);
+}
+
+#[test]
+fn test_refund_immediately_at_due_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_IMM");
+    let due_date = 50000;
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
+        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "immediate_refund"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Set time exactly at due date
+    env.ledger().with_mut(|li| li.timestamp = due_date);
+
+    escrow_client.refund(&invoice_id);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Refunded
+    );
+}
+
+#[test]
+fn test_refund_one_second_after_due_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_1S");
+    let due_date = 10000;
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
+        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "one_sec_refund"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Set time one second after due date
+    env.ledger().with_mut(|li| li.timestamp = due_date + 1);
+
+    escrow_client.refund(&invoice_id);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Refunded
+    );
+}
+
+#[test]
+fn test_refund_one_second_before_due_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_B1S");
+    let due_date = 10000;
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
+        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "before_refund"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Set time one second before due date
+    env.ledger().with_mut(|li| li.timestamp = due_date - 1);
+
+    // Refund should fail
+    let result = escrow_client.try_refund(&invoice_id);
+    assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Funded
+    );
+}
+
+#[test]
+fn test_refund_with_partial_payment_long_overdue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_PRT");
+    let due_date = 1000;
+
+    payment_token_asset.mint(&buyer, &1000);
+    payment_token_asset.mint(&payer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &payer, &1000, &1000, &due_date,
+        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "partial_long"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Partial payment of 400 before due date
+    escrow_client.record_payment(&invoice_id, &payer, &400);
+    assert_eq!(payment_token.balance(&escrow_id), 600);
+
+    // Advance time far past due date
+    env.ledger().with_mut(|li| li.timestamp = due_date * 1000);
+
+    // Refund the remaining 600
+    escrow_client.refund(&invoice_id);
+
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Refunded
+    );
+    // Contract should be empty
+    assert_eq!(payment_token.balance(&escrow_id), 0);
+    // Buyer gets back the remaining 600 (they already received 388 from partial)
+    assert_eq!(payment_token.balance(&buyer), 988); // 388 + 600
+}
+
+#[test]
+fn test_overdue_escrow_state_preserved_after_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_STATE");
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &seller, &1000, &1000, &1000,
+        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "state_preserve"),
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Set time past due date
+    env.ledger().with_mut(|li| li.timestamp = 2000);
+
+    escrow_client.refund(&invoice_id);
+
+    // Verify escrow data is preserved after refund
+    let data = escrow_client.get_escrow(&invoice_id);
+    assert_eq!(data.status, EscrowStatus::Refunded);
+    assert_eq!(data.seller, seller);
+    assert_eq!(data.face_value, 1000);
+    assert_eq!(data.due_dt, 1000);
+}
