@@ -1,4 +1,4 @@
-//! Event definitions for SEP-41 token (transfer, approve, mint, burn).
+//! Event definitions for SEP-41 token (transfer, approve, mint, burn, fee, role, nonce, history).
 
 use soroban_sdk::{Address, Env, Symbol};
 
