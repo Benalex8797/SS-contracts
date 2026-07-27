@@ -221,6 +221,31 @@ impl InvoiceToken {
         Ok(())
     }
 
+    /// Extend the expiration ledger of an existing allowance without changing its amount.
+    /// Requires `from` auth. The new expiration must be strictly later than the current one,
+    /// and the allowance must not already be expired (use `approve` to reinstate an expired one).
+    pub fn extend_allowance(
+        env: Env,
+        from: Address,
+        spender: Address,
+        new_expiration_ledger: u32,
+    ) -> Result<(), Error> {
+        from.require_auth();
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let allow =
+            storage::get_allowance_data(&env, &from, &spender).ok_or(Error::AllowanceNotFound)?;
+        let ledger = env.ledger().sequence();
+        if allow.expiration_ledger < ledger {
+            return Err(Error::AllowanceExpired);
+        }
+        if new_expiration_ledger <= allow.expiration_ledger {
+            return Err(Error::InvalidExpiration);
+        }
+        storage::extend_allowance_expiration(&env, &from, &spender, new_expiration_ledger);
+        events::allowance_extended_event(&env, &from, &spender, new_expiration_ledger);
+        Ok(())
+    }
+
     /// Revoke `spender`'s allowance. Requires `from` authorization.
     pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
         from.require_auth();
