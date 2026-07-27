@@ -40,4 +40,6 @@ pub enum Error {
     InvalidPayer = 16,
     /// Due date is invalid (e.g., in the past or zero).
     InvalidDueDate = 17,
+    /// Caller is not on the buyer whitelist and cannot fund escrows.
+    NotWhitelisted = 18,
 }
