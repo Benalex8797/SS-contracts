@@ -267,6 +267,10 @@ impl PaymentDistributor {
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
 
+        if token_client.balance(&contract_addr) < payment_amount {
+            return Err(Error::InsufficientBalance);
+        }
+
         token_client.transfer(&contract_addr, &seller, &seller_amount);
         token_client.transfer(&contract_addr, &funder, &investor_amount);
         if platform_fee > 0 {
@@ -329,6 +333,11 @@ impl PaymentDistributor {
 
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
+
+        if token_client.balance(&contract_addr) < refund_amount {
+            return Err(Error::InsufficientBalance);
+        }
+
         token_client.transfer(&contract_addr, &funder, &refund_amount);
 
         state.refund_distributed = true;

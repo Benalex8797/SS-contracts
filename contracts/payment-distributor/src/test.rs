@@ -1225,3 +1225,56 @@ fn test_calculate_distribution_splits_rejects_nothing_to_distribute() {
 
     assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #120: Enforce exact payment token balance verification
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_insufficient_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "TEST_INV");
+    let (token, _asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &1u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
+}
+
+#[test]
+fn test_distribute_refund_insufficient_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    
+    let escrow = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "TEST_INV");
+    let (token, _asset) = make_token(&env);
+
+    let result = distributor.try_distribute_refund(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), funder],
+        &soroban_sdk::vec![&env, 100i128],
+        &3u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InsufficientBalance)));
+}
