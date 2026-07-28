@@ -11,6 +11,8 @@ pub enum StorageKey {
     FeeRecipient,
     /// Re-entrancy guard flag for distribution entrypoints (Issue #127).
     Locked,
+    /// Whitelisted escrow contract address allowed to call distribute_payment (Issue #121).
+    EscrowContract,
 }
 
 #[contracttype]
@@ -85,4 +87,15 @@ pub struct AssetRoute {
     pub token: Address,
     pub amount: i128,
     pub split: DistributionSplit,
+}
+
+/// Dry-run preview of a `distribute_payment` split, with no state mutation or
+/// token transfers. Issue #129.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DistributionPreview {
+    pub seller_amount: i128,
+    pub investor_amount: i128,
+    pub platform_fee: i128,
+    pub total_distribution: i128,
 }

@@ -993,3 +993,233 @@ fn test_emergency_withdraw_empty_balance_rejected() {
 
     assert_eq!(result, Err(Ok(Error::NothingToWithdraw)));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #121: Dynamic Escrow Contract Address Binding
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_set_escrow_contract_by_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+
+    assert_eq!(distributor.get_escrow_contract(), None);
+    distributor.set_escrow_contract(&admin, &escrow);
+    assert_eq!(distributor.get_escrow_contract(), Some(escrow));
+}
+
+#[test]
+fn test_set_escrow_contract_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _distributor_id, distributor) = distributor_only(&env);
+    let attacker = Address::generate(&env);
+    let escrow = Address::generate(&env);
+
+    let result = distributor.try_set_escrow_contract(&attacker, &escrow);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    assert_eq!(distributor.get_escrow_contract(), None);
+}
+
+#[test]
+fn test_set_escrow_contract_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
+
+#[test]
+fn test_get_escrow_contract_requires_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    let result = distributor.try_get_escrow_contract();
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #131: Whitelisted Escrow Origin Filter Enforcement
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_open_when_no_escrow_bound() {
+    // Backward-compatible: with no escrow whitelisted, any caller (that can produce
+    // escrow_contract auth) may still call distribute_payment.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "OPEN");
+    let (token, asset) = make_token(&env);
+    asset.mint(&escrow, &100);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_distribute_payment_accepts_whitelisted_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "WL_OK");
+    let (token, asset) = make_token(&env);
+    asset.mint(&escrow, &100);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_distribute_payment_rejects_non_whitelisted_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let whitelisted_escrow = Address::generate(&env);
+    distributor.set_escrow_contract(&admin, &whitelisted_escrow);
+
+    let other_escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "WL_BAD");
+    let (token, asset) = make_token(&env);
+    asset.mint(&other_escrow, &100);
+
+    let result = distributor.try_distribute_payment(
+        &other_escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::UnauthorizedEscrow)));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #129: Distributor Fee Calculation Dry-Run Getter
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_calculate_distribution_splits_matches_actual_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true); // 5% fee
+    create_and_fund(&ctx, 1_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &1_000);
+
+    let preview = ctx.distributor.calculate_distribution_splits(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 1_000i128, 1_000i128, 950i128, 500i128],
+    );
+
+    assert_eq!(preview.seller_amount, 950);
+    assert_eq!(preview.investor_amount, 950);
+    assert_eq!(preview.platform_fee, 50);
+    assert_eq!(preview.total_distribution, 1_000);
+
+    // Dry-run must not mutate any state or move funds.
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 0);
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 0);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 0);
+
+    // The real distribution then produces the same numbers the preview promised.
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 950);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 950);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 50);
+}
+
+#[test]
+fn test_calculate_distribution_splits_rejects_invalid_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "PREVIEW_BAD_BPS");
+
+    let result = distributor.try_calculate_distribution_splits(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, seller.clone(), seller, funder, seller.clone()],
+        &soroban_sdk::vec![&env, 1_000i128, 0i128, 500i128, 10_001u32 as i128],
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidBps)));
+}
+
+#[test]
+fn test_calculate_distribution_splits_rejects_nothing_to_distribute() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "PREVIEW_NOTHING");
+
+    // paid_amount == already-distributed (0 == 0) -> nothing new to distribute.
+    let result = distributor.try_calculate_distribution_splits(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, seller.clone(), seller, funder, seller.clone()],
+        &soroban_sdk::vec![&env, 0i128, 0i128, 0i128, 0i128],
+    );
+
+    assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
+}
