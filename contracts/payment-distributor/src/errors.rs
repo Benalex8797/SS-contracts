@@ -29,8 +29,6 @@ pub enum Error {
     AssetMismatch = 16,
     /// The contract holds no balance to withdraw. Issue #125.
     NothingToWithdraw = 17,
-    /// No escrow contract has been whitelisted yet (Issue #121 / #131).
-    EscrowContractNotSet = 18,
-    /// Caller is not the whitelisted escrow contract (Issue #131).
-    UnauthorizedEscrowOrigin = 19,
+    /// The calling escrow contract does not match the whitelisted escrow address. Issue #131.
+    UnauthorizedEscrow = 18,
 }
