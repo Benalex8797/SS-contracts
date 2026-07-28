@@ -142,7 +142,7 @@ impl MockTokenEnvironment {
             &env_self.payment_token.id,
             &env_self.inv_token_id,
             &test_commitment(&env, "multi_token_test"),
-        &None,
+            &None,
         );
 
         env_self
@@ -2996,7 +2996,8 @@ fn test_fund_escrow_signed_rejects_replayed_nonce() {
     escrow_client.fund_escrow_signed(&invoice_id_a, &buyer, &amount, &1u64, &u64::MAX);
 
     // Reusing nonce 1 (even against a different invoice) must be rejected as a replay.
-    let result = escrow_client.try_fund_escrow_signed(&invoice_id_b, &buyer, &amount, &1u64, &u64::MAX);
+    let result =
+        escrow_client.try_fund_escrow_signed(&invoice_id_b, &buyer, &amount, &1u64, &u64::MAX);
     assert_eq!(result, Err(Ok(Error::NonceAlreadyUsed)));
 
     // A strictly increasing nonce is accepted.
@@ -3199,7 +3200,7 @@ fn test_fund_escrow_respects_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_MILE");
     let milestone = 200i128;
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3215,10 +3216,10 @@ fn test_fund_escrow_respects_milestone() {
 
     // Fund exactly the milestone
     escrow_client.fund_escrow(&invoice_id, &buyer, &milestone);
-    
+
     // Fund a multiple of the milestone
     escrow_client.fund_escrow(&invoice_id, &buyer, &(milestone * 2));
-    
+
     let escrow = escrow_client.get_escrow(&invoice_id);
     assert_eq!(escrow.funded_amt, milestone * 3);
 }
@@ -3246,7 +3247,7 @@ fn test_fund_escrow_rejects_below_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_BELOW");
     let milestone = 200i128;
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3288,7 +3289,7 @@ fn test_fund_escrow_rejects_not_multiple_of_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_MULT");
     let milestone = 200i128;
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3330,7 +3331,7 @@ fn test_fund_escrow_allows_remainder_below_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_REM");
     let milestone = 300i128; // purchase_price is 1000, so remaining will be 100
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3345,15 +3346,15 @@ fn test_fund_escrow_allows_remainder_below_milestone() {
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &900);
-    
+
     // Remaining is 100, which is below milestone (300).
     // Funder must provide exactly 100.
-    
+
     let result_wrong = escrow_client.try_fund_escrow(&invoice_id, &buyer, &50);
     assert_eq!(result_wrong, Err(Ok(Error::InvalidMilestoneAmount)));
-    
+
     escrow_client.fund_escrow(&invoice_id, &buyer, &100);
-    
+
     let escrow = escrow_client.get_escrow(&invoice_id);
     assert_eq!(escrow.status, EscrowStatus::Funded);
 }

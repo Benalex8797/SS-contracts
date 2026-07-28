@@ -5,7 +5,9 @@ mod events;
 mod storage;
 mod types;
 
-pub use types::{AssetRoute, DistributionPreview, DistributionSplit, DistributionState, MAX_FEE_BPS};
+pub use types::{
+    AssetRoute, DistributionPreview, DistributionSplit, DistributionState, MAX_FEE_BPS,
+};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
@@ -19,6 +21,7 @@ const ESCROW_STATUS_REFUNDED: u32 = 3;
 
 /// Maximum entries allowed in a single `distribute_batch` call.
 /// Soroban transactions have bounded CPU/memory; this cap keeps batches safe.
+#[allow(dead_code)]
 const MAX_BATCH_SIZE: u32 = 50;
 
 #[contract]
@@ -436,11 +439,7 @@ impl PaymentDistributor {
     ///
     /// Admin-only function to sweep leftover token balances to the configured
     /// fee recipient (or admin if not set).
-    pub fn sweep_dust(
-        env: Env,
-        admin: Address,
-        token: Address,
-    ) -> Result<(), Error> {
+    pub fn sweep_dust(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
@@ -454,18 +453,13 @@ impl PaymentDistributor {
             return Err(Error::NothingToSweep);
         }
 
-        let fee_recipient = storage::get_fee_recipient(&env)
-            .unwrap_or_else(|| stored_admin.clone());
+        let fee_recipient =
+            storage::get_fee_recipient(&env).unwrap_or_else(|| stored_admin.clone());
 
         token_client.transfer(&contract_addr, &fee_recipient, &balance);
         events::dust_swept(&env, &admin, &token, &fee_recipient, balance);
         Ok(())
     }
-
-
-    /// Batch payment fanout: distribute settled payments for multiple invoices in one call.
-    ///
-
 
     /// View: return the current admin.
     pub fn get_admin(env: Env) -> Result<Address, Error> {

@@ -123,11 +123,19 @@ impl InvoiceEscrow {
         // Ensure the payment token and invoice token use the same decimals to avoid
         // settlement/rounding mismatches during distribution and fee calculations.
         let inv_decimals: Option<u32> = env
-            .try_invoke_contract::<u32, soroban_sdk::Error>(&invoice_token, &Symbol::new(&env, "decimals"), soroban_sdk::vec![&env])
+            .try_invoke_contract::<u32, soroban_sdk::Error>(
+                &invoice_token,
+                &Symbol::new(&env, "decimals"),
+                soroban_sdk::vec![&env],
+            )
             .ok()
             .and_then(|r| r.ok());
         let pay_decimals: Option<u32> = env
-            .try_invoke_contract::<u32, soroban_sdk::Error>(&payment_token, &Symbol::new(&env, "decimals"), soroban_sdk::vec![&env])
+            .try_invoke_contract::<u32, soroban_sdk::Error>(
+                &payment_token,
+                &Symbol::new(&env, "decimals"),
+                soroban_sdk::vec![&env],
+            )
             .ok()
             .and_then(|r| r.ok());
         if let (Some(inv_d), Some(pay_d)) = (inv_decimals, pay_decimals) {
@@ -275,14 +283,15 @@ impl InvoiceEscrow {
 
         // Validate milestone constraints if a milestone is set
         if let Some(milestone) = data.funding_milestone {
-            let remaining_to_fund = data.purchase_price.checked_sub(data.funded_amt).ok_or(Error::Overflow)?;
-            
+            let remaining_to_fund = data
+                .purchase_price
+                .checked_sub(data.funded_amt)
+                .ok_or(Error::Overflow)?;
+
             // Funder is always allowed to just fund exactly the remaining amount to complete the escrow.
             // If they are not completing the escrow, the amount must be at least the milestone and a multiple of it.
-            if amount != remaining_to_fund {
-                if amount < milestone || amount % milestone != 0 {
-                    return Err(Error::InvalidMilestoneAmount);
-                }
+            if amount != remaining_to_fund && (amount < milestone || amount % milestone != 0) {
+                return Err(Error::InvalidMilestoneAmount);
             }
         }
 
@@ -427,7 +436,7 @@ impl InvoiceEscrow {
                         investor_amount,
                         config.fee_bps as i128,
                     ]
-                        .into_val(&env),
+                    .into_val(&env),
                     (data.status as u32).into_val(&env)
                 ],
             );

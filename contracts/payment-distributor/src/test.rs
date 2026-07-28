@@ -1239,7 +1239,7 @@ fn test_distribute_payment_insufficient_balance() {
     env.mock_all_auths();
 
     let (admin, _distributor_id, distributor) = distributor_only(&env);
-    
+
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);
@@ -1265,7 +1265,7 @@ fn test_distribute_refund_insufficient_balance() {
     env.mock_all_auths();
 
     let (admin, _distributor_id, distributor) = distributor_only(&env);
-    
+
     let escrow = Address::generate(&env);
     let funder = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "TEST_INV");

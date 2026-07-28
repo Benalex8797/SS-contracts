@@ -12,7 +12,6 @@ mod events;
 mod storage;
 mod types;
 
-use crate::constants::*;
 use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;

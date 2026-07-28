@@ -11,7 +11,8 @@ use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, BytesN, Env, FromVal, IntoVal, String as SorobanString, Symbol, TryFromVal, TryIntoVal, Val, Vec,
+    Address, BytesN, Env, FromVal, IntoVal, String as SorobanString, Symbol, TryFromVal,
+    TryIntoVal, Val, Vec,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -143,7 +144,8 @@ fn test_integration_escrow_lifecycle_happy_path() {
     );
 
     // Settle.
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
     // 3% fee: 30 to admin, 970 to buyer, 1000 to seller, escrow empty.
     assert_eq!(ctx.payment_token.balance(&ctx.admin), 30);
@@ -214,7 +216,10 @@ fn test_integration_token_locked_during_active_escrow() {
 
     // Transfer attempt must fail while locked.
     let other = Address::generate(&env);
-    assert!(ctx.inv_token.try_transfer(&ctx.buyer, &other, &100).is_err());
+    assert!(ctx
+        .inv_token
+        .try_transfer(&ctx.buyer, &other, &100)
+        .is_err());
 
     ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &500);
     assert!(!ctx.inv_token.transfer_locked());
@@ -390,7 +395,9 @@ fn test_integration_fund_cancelled_escrow_rejected() {
     );
     ctx.escrow.cancel_escrow(&ctx.invoice_id, &ctx.seller);
 
-    let result = ctx.escrow.try_fund_escrow(&ctx.invoice_id, &ctx.buyer, &1_000);
+    let result = ctx
+        .escrow
+        .try_fund_escrow(&ctx.invoice_id, &ctx.buyer, &1_000);
     assert_eq!(result, Err(Ok(errors::Error::EscrowCancelled)));
 }
 
@@ -439,7 +446,8 @@ fn test_integration_pause_blocks_fund_and_payment() {
 
     // Unpause and settle.
     ctx.escrow.set_paused(&false);
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
     assert_eq!(
         ctx.escrow.get_escrow_status(&ctx.invoice_id),
         EscrowStatus::Settled
@@ -479,7 +487,8 @@ fn test_integration_zero_fee_full_investor_return() {
     let ctx = setup(&env, 0, "INVZF", 1_000, 1_000);
     create_and_fund(&ctx, 1_000, 99_999);
 
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
     assert_eq!(ctx.payment_token.balance(&ctx.admin), 0);
     assert_eq!(ctx.payment_token.balance(&ctx.buyer), 1_000);
     assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
@@ -496,7 +505,8 @@ fn test_integration_max_fee_investor_receives_nothing() {
     let ctx = setup(&env, 10_000, "INVMF", 1_000, 1_000);
     create_and_fund(&ctx, 1_000, 99_999);
 
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
     // 100% fee → investor gets 0, admin gets 1000, seller gets 1000 (released principal)
     assert_eq!(ctx.payment_token.balance(&ctx.admin), 1_000);
     assert_eq!(ctx.payment_token.balance(&ctx.buyer), 0);
@@ -518,7 +528,9 @@ fn test_integration_wrong_payer_rejected() {
     let impostor = Address::generate(&env);
     ctx.payment_asset.mint(&impostor, &1_000);
 
-    let result = ctx.escrow.try_record_payment(&ctx.invoice_id, &impostor, &1_000);
+    let result = ctx
+        .escrow
+        .try_record_payment(&ctx.invoice_id, &impostor, &1_000);
     assert_eq!(result, Err(Ok(errors::Error::InvalidPayer)));
 }
 
@@ -534,7 +546,9 @@ fn test_integration_overpayment_rejected() {
     create_and_fund(&ctx, 1_000, 99_999);
 
     // face_value == 1000, paying 1001 must fail.
-    let result = ctx.escrow.try_record_payment(&ctx.invoice_id, &ctx.payer, &1_001);
+    let result = ctx
+        .escrow
+        .try_record_payment(&ctx.invoice_id, &ctx.payer, &1_001);
     assert_eq!(result, Err(Ok(errors::Error::InvalidAmount)));
 }
 
@@ -562,7 +576,9 @@ fn test_integration_over_funding_rejected() {
     );
 
     // Purchase price is 1000; funding 1001 must fail.
-    let result = ctx.escrow.try_fund_escrow(&ctx.invoice_id, &ctx.buyer, &1_001);
+    let result = ctx
+        .escrow
+        .try_fund_escrow(&ctx.invoice_id, &ctx.buyer, &1_001);
     assert_eq!(result, Err(Ok(errors::Error::InvalidAmount)));
 }
 
@@ -778,7 +794,8 @@ fn test_integration_state_persistence_after_settlement() {
     let ctx = setup(&env, 300, "INVPSS", 1_000, 1_000);
     create_and_fund(&ctx, 1_000, 99_999);
 
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
     let data = ctx.escrow.get_escrow(&ctx.invoice_id);
     assert_eq!(data.status, EscrowStatus::Settled);
@@ -820,7 +837,9 @@ fn test_integration_get_escrow_status_not_found() {
     env.mock_all_auths();
     let ctx = setup(&env, 300, "INVSGNF", 0, 0);
 
-    let result = ctx.escrow.try_get_escrow_status(&Symbol::new(&env, "MISSING"));
+    let result = ctx
+        .escrow
+        .try_get_escrow_status(&Symbol::new(&env, "MISSING"));
     assert_eq!(result, Err(Ok(errors::Error::EscrowNotFound)));
 }
 
@@ -853,7 +872,8 @@ fn test_integration_commitment_immutable_after_lifecycle() {
     assert_eq!(ctx.escrow.get_escrow(&ctx.invoice_id).commitment, original);
 
     // Settle.
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
     assert_eq!(ctx.escrow.get_escrow(&ctx.invoice_id).commitment, original);
 }
 
@@ -904,7 +924,9 @@ fn test_integration_two_independent_escrows() {
     ctx_a.escrow.fund_escrow(&inv_b_id, &buyer_b, &500);
 
     // Settle A.
-    ctx_a.escrow.record_payment(&ctx_a.invoice_id, &ctx_a.payer, &1_000);
+    ctx_a
+        .escrow
+        .record_payment(&ctx_a.invoice_id, &ctx_a.payer, &1_000);
     assert_eq!(
         ctx_a.escrow.get_escrow_status(&ctx_a.invoice_id),
         EscrowStatus::Settled
@@ -982,7 +1004,16 @@ fn test_integration_escrow_created_event_emitted() {
     assert_eq!(topic_sym, Symbol::new(&env, "escrow_created"));
 
     let (inv_id, seller, debtor, fv, pp, dd, _tok, _inv_tok, cmt, _milestone): (
-        Symbol, Address, Address, i128, i128, u64, Address, Address, BytesN<32>, Option<i128>,
+        Symbol,
+        Address,
+        Address,
+        i128,
+        i128,
+        u64,
+        Address,
+        Address,
+        BytesN<32>,
+        Option<i128>,
     ) = data.try_into_val(&env).unwrap();
     assert_eq!(inv_id, ctx.invoice_id);
     assert_eq!(seller, ctx.seller);
@@ -1039,7 +1070,8 @@ fn test_integration_payment_settled_event_emitted() {
     env.mock_all_auths();
     let ctx = setup(&env, 300, "INVPSE", 1_000, 1_000);
     create_and_fund(&ctx, 1_000, 99_999);
-    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
     let evts = env.events().all();
     let evt = evts
@@ -1060,7 +1092,7 @@ fn test_integration_payment_settled_event_emitted() {
         data.try_into_val(&env).unwrap();
     assert_eq!(inv_id, ctx.invoice_id);
     assert_eq!(amount, 1_000);
-    assert_eq!(fee, 30);       // 3% of 1000
+    assert_eq!(fee, 30); // 3% of 1000
     assert_eq!(investor, 970);
 }
 
@@ -1113,8 +1145,8 @@ fn test_integration_discounted_purchase_price() {
         &ctx.invoice_id,
         &ctx.seller,
         &ctx.payer,
-        &900,   // face_value
-        &900,   // purchase_price
+        &900, // face_value
+        &900, // purchase_price
         &99_999,
         &ctx.payment_token.address,
         &ctx.inv_token_id,
