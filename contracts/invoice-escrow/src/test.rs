@@ -28,6 +28,11 @@ impl MockInvoiceToken {
     pub fn set_transfer_locked(_env: Env, _caller: Address, _locked: bool) {
         // Mock the set_transfer_locked call — no-op for unit tests
     }
+
+    pub fn decimals(_env: Env) -> u32 {
+        // Match the typical Stellar asset decimals in tests
+        7
+    }
 }
 
 #[test]

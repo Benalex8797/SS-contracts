@@ -83,6 +83,23 @@ impl InvoiceEscrow {
         if storage::has_escrow(&env, invoice_id.clone()) {
             return Err(Error::EscrowExists);
         }
+        // Ensure the payment token and invoice token use the same decimals to avoid
+        // settlement/rounding mismatches during distribution and fee calculations.
+        // If either token does not implement `decimals`, this will surface in tests
+        // via the mock implementations; production tokens should expose decimals.
+        let inv_decimals: u32 = env.invoke_contract(
+            &invoice_token,
+            &Symbol::new(&env, "decimals"),
+            soroban_sdk::vec![&env],
+        );
+        let pay_decimals: u32 = env.invoke_contract(
+            &payment_token,
+            &Symbol::new(&env, "decimals"),
+            soroban_sdk::vec![&env],
+        );
+        if inv_decimals != pay_decimals {
+            return Err(Error::InvalidAssetDecimals);
+        }
         let data = EscrowData {
             inv_id: invoice_id.clone(),
             seller: seller.clone(),
