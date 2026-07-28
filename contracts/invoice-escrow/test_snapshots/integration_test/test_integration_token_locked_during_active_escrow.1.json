@@ -54,6 +54,31 @@
     ],
     [
       [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CD3FXVGYSLQFFTW3UH6WFF2OKZH7VERGZJZAMJHTGHBWO4F6URWEJL23",
+              "function_name": "mint",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 500
+                  }
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
         {
           "function": {
@@ -62,7 +87,7 @@
               "function_name": "create_escrow",
               "args": [
                 {
-                  "symbol": "INVLOCK"
+                  "symbol": "INVLCK"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -92,7 +117,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "bytes": "746573745f696e766f6963655f64617461000000000000000000000000000000"
+                  "bytes": "636f6d6d69746d656e7400000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -101,7 +126,6 @@
         }
       ]
     ],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
@@ -112,7 +136,7 @@
               "function_name": "fund_escrow",
               "args": [
                 {
-                  "symbol": "INVLOCK"
+                  "symbol": "INVLCK"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -158,31 +182,6 @@
     [],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CD3FXVGYSLQFFTW3UH6WFF2OKZH7VERGZJZAMJHTGHBWO4F6URWEJL23",
-              "function_name": "mint",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 500
-                  }
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
         {
           "function": {
@@ -191,7 +190,7 @@
               "function_name": "record_payment",
               "args": [
                 {
-                  "symbol": "INVLOCK"
+                  "symbol": "INVLCK"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
@@ -342,7 +341,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1033654523790656264
+                "nonce": 4837995959683129791
               }
             },
             "durability": "temporary"
@@ -357,7 +356,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 1033654523790656264
+                    "nonce": 4837995959683129791
                   }
                 },
                 "durability": "temporary",
@@ -375,7 +374,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4837995959683129791
+                "nonce": 2032731177588607455
               }
             },
             "durability": "temporary"
@@ -390,7 +389,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4837995959683129791
+                    "nonce": 2032731177588607455
                   }
                 },
                 "durability": "temporary",
@@ -478,7 +477,7 @@
                   "symbol": "Escrow"
                 },
                 {
-                  "symbol": "INVLOCK"
+                  "symbol": "INVLCK"
                 }
               ]
             },
@@ -498,7 +497,7 @@
                       "symbol": "Escrow"
                     },
                     {
-                      "symbol": "INVLOCK"
+                      "symbol": "INVLCK"
                     }
                   ]
                 },
@@ -510,7 +509,7 @@
                         "symbol": "commitment"
                       },
                       "val": {
-                        "bytes": "746573745f696e766f6963655f64617461000000000000000000000000000000"
+                        "bytes": "636f6d6d69746d656e7400000000000000000000000000000000000000000000"
                       }
                     },
                     {
@@ -564,7 +563,7 @@
                         "symbol": "inv_id"
                       },
                       "val": {
-                        "symbol": "INVLOCK"
+                        "symbol": "INVLCK"
                       }
                     },
                     {
@@ -640,7 +639,7 @@
                   "symbol": "FunderAmount"
                 },
                 {
-                  "symbol": "INVLOCK"
+                  "symbol": "INVLCK"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -663,7 +662,7 @@
                       "symbol": "FunderAmount"
                     },
                     {
-                      "symbol": "INVLOCK"
+                      "symbol": "INVLCK"
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -910,7 +909,7 @@
                                 "symbol": "invoice_id"
                               },
                               "val": {
-                                "symbol": "INVLOCK"
+                                "symbol": "INVLCK"
                               }
                             },
                             {
@@ -926,7 +925,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Lock Test Invoice"
+                                "string": "Test Invoice Token"
                               }
                             },
                             {
@@ -942,7 +941,7 @@
                                 "symbol": "symbol"
                               },
                               "val": {
-                                "string": "INVLCK"
+                                "string": "TIT"
                               }
                             },
                             {
@@ -987,7 +986,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 4270020994084947596
+                "nonce": 1033654523790656264
               }
             },
             "durability": "temporary"
@@ -1002,7 +1001,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 4270020994084947596
+                    "nonce": 1033654523790656264
                   }
                 },
                 "durability": "temporary",
