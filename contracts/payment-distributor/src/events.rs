@@ -18,10 +18,10 @@ pub fn fee_recipient_updated(env: &Env, old_recipient: Option<Address>, new_reci
 /// Event structure:
 /// - Topics: (PaymentDistributed, escrow_address, invoice_id)
 /// - Data: (
-///     recipients: Vec<Address>,  // [seller, funder, fee_recipient]
-///     amounts: Vec<i128>,        // [seller_amount, investor_amount, platform_fee, total_paid]
-///     escrow_status: u32,        // Current escrow status
-///     timestamp: u64             // Ledger timestamp
+///   recipients: Vec<Address>,  // [seller, funder, fee_recipient]
+///   amounts: Vec<i128>,        // [seller_amount, investor_amount, platform_fee, total_paid]
+///   escrow_status: u32,        // Current escrow status
+///   timestamp: u64             // Ledger timestamp
 ///   )
 pub fn payment_distributed(
     env: &Env,
@@ -83,6 +83,14 @@ pub fn asset_distributed(
     let topics = (Symbol::new(env, "AssetDistributed"), token.clone());
     env.events()
         .publish(topics, (recipients.clone(), amounts.clone(), total));
+}
+
+/// Issue #121: Whitelisted escrow contract binding updated event.
+/// Topics: (escrow_contract_updated,); Data: (old_escrow, new_escrow).
+pub fn escrow_contract_updated(env: &Env, old_escrow: Option<Address>, new_escrow: &Address) {
+    let topics = (Symbol::new(env, "escrow_contract_updated"),);
+    env.events()
+        .publish(topics, (old_escrow, new_escrow.clone()));
 }
 
 /// Issue #125: Emergency withdrawal audit event.
