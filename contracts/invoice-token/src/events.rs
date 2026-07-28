@@ -1,4 +1,4 @@
-//! Event definitions for SEP-41 token (transfer, approve, mint, burn).
+//! Event definitions for SEP-41 token (transfer, approve, mint, burn, fee, role, nonce, history).
 
 use soroban_sdk::{Address, Env, Symbol};
 
@@ -55,4 +55,31 @@ pub fn paused_updated_event(env: &Env, old_value: bool, new_value: bool) {
         (Symbol::new(env, "paused_updated"),),
         (old_value, new_value),
     );
+}
+
+/// Emit an allowance expiration extension (topics ["allowance_extended", from, spender], data new_expiration_ledger).
+pub fn allowance_extended_event(
+    env: &Env,
+    from: &Address,
+    spender: &Address,
+    new_expiration_ledger: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "allow_extend"), from, spender),
+        new_expiration_ledger,
+    );
+}
+
+/// Emit a token-decimal configuration update.
+pub fn decimals_updated_event(env: &Env, old_value: u32, new_value: u32) {
+    env.events().publish(
+        (Symbol::new(env, "decimals_updated"),),
+        (old_value, new_value),
+    );
+}
+
+/// Emit an explicit allowance revocation.
+pub fn approval_revoked_event(env: &Env, from: &Address, spender: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "approval_revoked"), from, spender), ());
 }

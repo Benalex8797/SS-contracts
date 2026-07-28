@@ -13,6 +13,8 @@ pub enum StorageKey {
     Escrow(soroban_sdk::Symbol),
     /// Persistent: funder amounts by (invoice_id, funder_address).
     FunderAmount(soroban_sdk::Symbol, soroban_sdk::Address),
+    /// Persistent: highest nonce consumed for a signed off-chain approval, by buyer address.
+    Nonce(soroban_sdk::Address),
 }
 
 /// Global contract configuration.
@@ -27,6 +29,10 @@ pub struct Config {
     pub payment_distributor: Option<soroban_sdk::Address>,
     /// Emergency pause flag for lifecycle-changing operations.
     pub paused: bool,
+    /// When true, `fund_escrow` requires the buyer to be on the whitelist.
+    /// Defaults to false (opt-in) so existing deployments/tests are unaffected
+    /// until an admin explicitly enables it.
+    pub whitelist_enabled: bool,
 }
 
 /// Lifecycle status of an escrow.

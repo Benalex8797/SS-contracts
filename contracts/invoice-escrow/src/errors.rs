@@ -37,7 +37,11 @@ pub enum Error {
     /// Contract is paused and the requested operation is temporarily disabled.
     Paused = 15,
     /// Payer is not the authorized debtor for this invoice.
-    InvalidPayer = 15,
+    InvalidPayer = 16,
     /// Due date is invalid (e.g., in the past or zero).
-    InvalidDueDate = 16,
+    InvalidDueDate = 17,
+    /// Nonce has already been consumed by a prior signed off-chain approval (replay attempt).
+    NonceAlreadyUsed = 18,
+    /// Escrow is not yet in a terminal state (Settled, Refunded, or Cancelled) and cannot be cleaned up.
+    EscrowNotSettled = 19,
 }

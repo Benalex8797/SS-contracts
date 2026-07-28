@@ -13,4 +13,20 @@ pub enum Error {
     RefundAlreadyDistributed = 7,
     Overflow = 8,
     WrongDistributor = 9,
+    /// Fee BPS exceeds maximum allowed value (10,000). Issue #124.
+    InvalidBps = 10,
+    /// A re-entrant call into a guarded entrypoint was detected. Issue #127.
+    ReentrancyDetected = 11,
+    /// A referral cut was requested without a valid referral recipient. Issue #130.
+    InvalidReferralCut = 12,
+    /// Referral cut plus recipient shares exceed the total (10,000 BPS). Issue #130.
+    SplitsExceedTotal = 13,
+    /// A distribution split is malformed (empty or mismatched recipients/shares). Issue #130.
+    InvalidSplit = 14,
+    /// No assets were supplied to a multi-asset distribution. Issue #126.
+    EmptyAssetList = 15,
+    /// The same asset appears more than once in a multi-asset distribution. Issue #126.
+    AssetMismatch = 16,
+    /// The contract holds no balance to withdraw. Issue #125.
+    NothingToWithdraw = 17,
 }
