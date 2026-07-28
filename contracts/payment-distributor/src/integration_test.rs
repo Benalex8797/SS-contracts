@@ -60,6 +60,7 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> FlowContext<'_
 
     escrow.initialize(&admin, &fee_bps);
     distributor.initialize(&admin);
+    distributor.set_escrow_contract(&admin, &escrow_id);
     if configure_distributor {
         escrow.set_payment_distributor(&distributor_id);
     }
