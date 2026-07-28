@@ -178,7 +178,7 @@ fn test_set_transfer_locked_event_emission() {
     client.set_transfer_locked(&admin, &false);
 
     let events = env.events().all();
-    let event = events.events().last().unwrap();
+    let event = events.last().unwrap();
     let (_contract_addr, topics, data) = event;
     assert_eq!(
         topics,
@@ -288,7 +288,7 @@ fn test_transfer_event_emission() {
     client.transfer(&admin, &recipient, &250);
 
     let events = env.events().all();
-    let event = events.events().last().unwrap();
+    let event = events.last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -319,7 +319,7 @@ fn test_approve_event_emission() {
     client.approve(&admin, &spender, &amount, &expiration);
 
     let events = env.events().all();
-    let event = events.events().last().unwrap();
+    let event = events.last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -555,7 +555,7 @@ fn test_no_transfer_event_on_locked_failure() {
     assert!(client.transfer_locked());
 
     let recipient = Address::generate(&env);
-    let events_before = env.events().all().events().len();
+    let events_before = env.events().all().len();
 
     let result = client.try_transfer(&user, &recipient, &100);
     assert!(result.is_err());
@@ -590,8 +590,9 @@ fn test_multiple_events_in_sequence() {
     let events = env.events().all();
     let event_count = events.len();
 
-    if event_count >= 3 {
-        let mint_event = events.iter().rev().nth(2).unwrap();
+    if event_count >= 4 {
+        // Order: mint_event, history_appended_event (from transfer), transfer_event, burn_event.
+        let mint_event = events.iter().rev().nth(3).unwrap();
         let (_addr1, topics1, _data1) = mint_event;
         assert_eq!(
             topics1,

@@ -210,7 +210,7 @@
                               "symbol": "RoleAdmin"
                             },
                             {
-                              "symbol": "tlock"
+                              "symbol": "transfer_locker"
                             }
                           ]
                         },
@@ -297,7 +297,7 @@
                               "symbol": "RoleGrant"
                             },
                             {
-                              "symbol": "tlock"
+                              "symbol": "transfer_locker"
                             },
                             {
                               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -389,5 +389,39 @@
       ]
     ]
   },
-  "events": []
+  "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fee_updated"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 0
+                  }
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 250
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    }
+  ]
 }

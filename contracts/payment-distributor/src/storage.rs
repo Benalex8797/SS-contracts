@@ -89,19 +89,6 @@ pub fn set_distribution(
     extend_ttl(env, escrow, invoice_id);
 }
 
-/// Set the whitelisted escrow contract address authorized to invoke
-/// distribution entrypoints. Admin-only. Issue #121.
-pub fn set_escrow_contract(env: &Env, escrow_contract: &Address) {
-    env.storage()
-        .instance()
-        .set(&StorageKey::EscrowContract, escrow_contract);
-}
-
-/// Get the whitelisted escrow contract address, if configured. Issue #121.
-pub fn get_escrow_contract(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&StorageKey::EscrowContract)
-}
-
 // ==================== Role-based access control (Issue #182) ====================
 
 pub fn get_role_admin(env: &Env, role: &Symbol) -> Option<Address> {

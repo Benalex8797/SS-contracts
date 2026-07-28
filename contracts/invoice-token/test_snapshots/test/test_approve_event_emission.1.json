@@ -271,7 +271,7 @@
                               "symbol": "RoleAdmin"
                             },
                             {
-                              "symbol": "tlock"
+                              "symbol": "transfer_locker"
                             }
                           ]
                         },
@@ -358,7 +358,7 @@
                               "symbol": "RoleGrant"
                             },
                             {
-                              "symbol": "tlock"
+                              "symbol": "transfer_locker"
                             },
                             {
                               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

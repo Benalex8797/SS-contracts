@@ -92,14 +92,6 @@ pub fn asset_distributed(
         .publish(topics, (recipients.clone(), amounts.clone(), total));
 }
 
-/// Issue #121: Whitelisted escrow contract binding updated event.
-/// Topics: (escrow_contract_updated,); Data: (old_escrow, new_escrow).
-pub fn escrow_contract_updated(env: &Env, old_escrow: Option<Address>, new_escrow: &Address) {
-    let topics = (Symbol::new(env, "escrow_contract_updated"),);
-    env.events()
-        .publish(topics, (old_escrow, new_escrow.clone()));
-}
-
 /// Issue #125: Emergency withdrawal audit event.
 /// Topics: (EmergencyWithdrawal, token); Data: (admin, to, amount).
 pub fn emergency_withdrawal(
@@ -132,4 +124,13 @@ pub fn dust_swept(
     let topics = (Symbol::new(env, "DustSwept"), token.clone());
     env.events()
         .publish(topics, (admin.clone(), to.clone(), amount));
+}
+
+/// Publish a batch_distributed event after a successful `distribute_batch` call.
+///
+/// `count`  — number of entries processed in this batch.
+/// `total`  — sum of all payment deltas distributed.
+pub fn batch_distributed(env: &Env, count: u32, total: i128) {
+    let topics = (Symbol::new(env, "batch_dist"),);
+    env.events().publish(topics, (count, total));
 }

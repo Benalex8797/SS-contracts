@@ -80,6 +80,14 @@
                                 "symbol": "payment_distributor"
                               },
                               "val": "void"
+                            },
+                            {
+                              "key": {
+                                "symbol": "whitelist_enabled"
+                              },
+                              "val": {
+                                "bool": false
+                              }
                             }
                           ]
                         }

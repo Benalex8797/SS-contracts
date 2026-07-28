@@ -5,14 +5,15 @@ mod events;
 mod storage;
 mod types;
 
-pub use types::{AssetRoute, DistributionPreview, DistributionSplit, DistributionState};
+pub use types::{
+    AssetRoute, BatchPaymentEntry, DistributionPreview, DistributionSplit, DistributionState,
+};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
 const OPERATOR_ROLE: &str = "operator";
 
 use errors::Error;
-use types::MAX_FEE_BPS;
 
 const ESCROW_STATUS_FUNDED: u32 = 1;
 const ESCROW_STATUS_SETTLED: u32 = 2;
@@ -56,22 +57,23 @@ fn release_lock(env: &Env) {
 }
 
 /// Issue #129: Shared split-calculation core used by both `distribute_payment`
-/// and the `calculate_distribution_splits` dry-run getter. Computes the
+/// and the `calculate_distribution_splits` dry-run getter. Validates the
 /// seller/investor/fee split for a payment delta with no storage writes or
 /// token transfers.
 ///
-/// Issue #132: Rounding losses are allocated to the seller so the total
-/// distribution equals `payment_amount` exactly.
+/// The escrow contract releases `seller_amount` (its own previously-held
+/// collateral) to the seller in addition to routing the payer's `payment_amount`
+/// between the investor and the platform fee, so a full distribution moves
+/// `2 * payment_amount` in total:
+/// - `seller_amount` must equal the payment delta (`paid_amount - already_distributed`).
+/// - `investor_amount + platform_fee` must equal the same payment delta.
 fn compute_split(
     paid_amount: i128,
     already_distributed: i128,
+    seller_amount: i128,
     investor_amount: i128,
-    fee_bps_u32: u32,
+    platform_fee: i128,
 ) -> Result<types::DistributionPreview, Error> {
-    if fee_bps_u32 > MAX_FEE_BPS {
-        return Err(Error::InvalidBps);
-    }
-
     let payment_amount = paid_amount
         .checked_sub(already_distributed)
         .ok_or(Error::Overflow)?;
@@ -80,19 +82,15 @@ fn compute_split(
         return Err(Error::NothingToDistribute);
     }
 
-    let platform_fee = payment_amount
-        .checked_mul(fee_bps_u32 as i128)
-        .ok_or(Error::Overflow)?
-        .checked_div(10_000)
+    if seller_amount != payment_amount {
+        return Err(Error::InvalidAmount);
+    }
+
+    let payer_distribution = investor_amount
+        .checked_add(platform_fee)
         .ok_or(Error::Overflow)?;
 
-    let seller_amount = payment_amount
-        .checked_sub(investor_amount)
-        .ok_or(Error::Overflow)?
-        .checked_sub(platform_fee)
-        .ok_or(Error::Overflow)?;
-
-    if seller_amount < 0 {
+    if payer_distribution != payment_amount {
         return Err(Error::InvalidAmount);
     }
 
@@ -101,10 +99,6 @@ fn compute_split(
         .ok_or(Error::Overflow)?
         .checked_add(platform_fee)
         .ok_or(Error::Overflow)?;
-
-    if total_distribution != payment_amount {
-        return Err(Error::InvalidAmount);
-    }
 
     Ok(types::DistributionPreview {
         seller_amount,
@@ -249,19 +243,21 @@ impl PaymentDistributor {
         let token = addresses.get(0).ok_or(Error::InvalidAmount)?;
         let seller = addresses.get(1).ok_or(Error::InvalidAmount)?;
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
-        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
 
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
+        let seller_amount_in = amounts.get(1).ok_or(Error::InvalidAmount)?;
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
+        let platform_fee_in = amounts.get(3).ok_or(Error::InvalidAmount)?;
         let mut state = get_distribution_state(&env, &escrow_contract, &invoice_id);
 
-        // Issue #132: Automated fee rounding loss minimization, computed via the
-        // shared `compute_split` core also used by the Issue #129 dry-run getter.
+        // Validated via the shared `compute_split` core also used by the
+        // Issue #129 dry-run getter.
         let preview = compute_split(
             paid_amount,
             state.paid_distributed,
+            seller_amount_in,
             investor_amount,
-            fee_bps_u32,
+            platform_fee_in,
         )?;
         let platform_fee = preview.platform_fee;
         let seller_amount = preview.seller_amount;
@@ -273,7 +269,7 @@ impl PaymentDistributor {
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
 
-        if token_client.balance(&contract_addr) < payment_amount {
+        if token_client.balance(&contract_addr) < preview.total_distribution {
             return Err(Error::InsufficientBalance);
         }
 
@@ -659,16 +655,18 @@ impl PaymentDistributor {
             return Err(Error::InvalidAmount);
         }
 
-        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
+        let seller_amount = amounts.get(1).ok_or(Error::InvalidAmount)?;
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
+        let platform_fee = amounts.get(3).ok_or(Error::InvalidAmount)?;
         let state = get_distribution_state(&env, &escrow_contract, &invoice_id);
 
         compute_split(
             paid_amount,
             state.paid_distributed,
+            seller_amount,
             investor_amount,
-            fee_bps_u32,
+            platform_fee,
         )
     }
 }

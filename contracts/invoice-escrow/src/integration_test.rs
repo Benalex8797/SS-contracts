@@ -10,9 +10,30 @@ use super::*;
 use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    Address, BytesN, Env, String as SorobanString, Symbol,
+    testutils::{Address as _, Events as _, Ledger as _},
+    Address, BytesN, Env, String as SorobanString, Symbol, TryIntoVal, Val,
 };
+
+/// Find the most recent published event whose first topic is `name`.
+///
+/// Several entrypoints publish a domain event followed unconditionally by an
+/// `escrow_status_changed` event, so `events().all().last()` doesn't reliably
+/// pick out the domain event under test.
+fn last_event_by_topic(env: &Env, name: &str) -> (Address, soroban_sdk::Vec<Val>, Val) {
+    let target = Symbol::new(env, name);
+    env.events()
+        .all()
+        .iter()
+        .rev()
+        .find(|(_, topics, _)| {
+            topics
+                .get(0)
+                .and_then(|t| t.try_into_val(env).ok())
+                .map(|s: Symbol| s == target)
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("no event found with topic {}", name))
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -73,7 +94,7 @@ fn setup<'a>(
         &admin,
         &SorobanString::from_str(env, "Test Invoice Token"),
         &SorobanString::from_str(env, "TIT"),
-        &18,
+        &7,
         &invoice_id,
         &escrow_id,
     );
@@ -845,6 +866,7 @@ fn test_integration_commitment_immutable_after_lifecycle() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &original,
+        &None,
     );
 
     // Fund.
@@ -878,7 +900,7 @@ fn test_integration_two_independent_escrows() {
         &ctx_a.admin,
         &SorobanString::from_str(&env, "Invoice B"),
         &SorobanString::from_str(&env, "INVB"),
-        &18,
+        &7,
         &inv_b_id,
         &ctx_a.escrow_id,
     );
@@ -950,12 +972,11 @@ fn test_integration_escrow_created_event_emitted() {
         &None,
     );
 
-    let evts = env.events().all();
-    let (_addr, topics, data) = evts.last().unwrap();
+    let (_addr, topics, data) = last_event_by_topic(&env, "escrow_created");
     assert_eq!(topics, (Symbol::new(&env, "escrow_created"),).into_val(&env));
 
-    let (inv_id, seller, debtor, fv, pp, dd, _tok, _inv_tok, cmt): (
-        Symbol, Address, Address, i128, i128, u64, Address, Address, BytesN<32>,
+    let (inv_id, seller, debtor, fv, pp, dd, _tok, _inv_tok, cmt, _milestone): (
+        Symbol, Address, Address, i128, i128, u64, Address, Address, BytesN<32>, Option<i128>,
     ) = data.try_into_val(&env).unwrap();
     assert_eq!(inv_id, ctx.invoice_id);
     assert_eq!(seller, ctx.seller);
@@ -986,8 +1007,7 @@ fn test_integration_escrow_cancelled_event_emitted() {
     );
     ctx.escrow.cancel_escrow(&ctx.invoice_id, &ctx.seller);
 
-    let evts = env.events().all();
-    let (_addr, topics, data) = evts.last().unwrap();
+    let (_addr, topics, data) = last_event_by_topic(&env, "escrow_cancelled");
     assert_eq!(topics, (Symbol::new(&env, "escrow_cancelled"),).into_val(&env));
 
     let (inv_id, seller): (Symbol, Address) = data.try_into_val(&env).unwrap();
@@ -1003,8 +1023,7 @@ fn test_integration_payment_settled_event_emitted() {
     create_and_fund(&ctx, 1_000, 99_999);
     ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
-    let evts = env.events().all();
-    let (_addr, topics, data) = evts.last().unwrap();
+    let (_addr, topics, data) = last_event_by_topic(&env, "payment_settled");
     assert_eq!(topics, (Symbol::new(&env, "payment_settled"),).into_val(&env));
 
     let (inv_id, amount, fee, investor): (Symbol, i128, i128, i128) =
@@ -1025,8 +1044,7 @@ fn test_integration_escrow_refunded_event_emitted() {
     env.ledger().set_timestamp(1_001);
     ctx.escrow.refund(&ctx.invoice_id);
 
-    let evts = env.events().all();
-    let (_addr, topics, data) = evts.last().unwrap();
+    let (_addr, topics, data) = last_event_by_topic(&env, "escrow_refunded");
     assert_eq!(topics, (Symbol::new(&env, "escrow_refunded"),).into_val(&env));
 
     let (inv_id, amount): (Symbol, i128) = data.try_into_val(&env).unwrap();
