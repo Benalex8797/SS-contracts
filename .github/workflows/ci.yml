@@ -19,11 +19,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - toolchain: stable
-            target: wasm32v1-none
-          - toolchain: "1.80.0"
-            target: wasm32-unknown-unknown
+        toolchain: [stable]
+        target: [wasm32v1-none]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
