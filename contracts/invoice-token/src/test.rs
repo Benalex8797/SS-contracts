@@ -1310,3 +1310,105 @@ fn test_pause_blocks_burn_and_burn_from() {
     assert_eq!(client.total_supply(), 100);
     assert_eq!(client.allowance(&admin, &spender), 100);
 }
+
+#[test]
+fn test_initialize_rejects_empty_name() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let empty_name = SorobanString::from_str(&env, "");
+    let symbol = SorobanString::from_str(&env, "INV001");
+    let invoice_id = Symbol::new(&env, "inv_001");
+
+    let result = client.try_initialize(&admin, &empty_name, &symbol, &7u32, &invoice_id, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidMetadata)));
+}
+
+#[test]
+fn test_initialize_rejects_empty_symbol() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice INV-001");
+    let empty_symbol = SorobanString::from_str(&env, "");
+    let invoice_id = Symbol::new(&env, "inv_001");
+
+    let result = client.try_initialize(&admin, &name, &empty_symbol, &7u32, &invoice_id, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidMetadata)));
+}
+
+#[test]
+fn test_extend_allowance_updates_expiration_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+
+    client.mint(&admin, &1000, &minter);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&admin, &spender, &500, &expiration);
+
+    let new_expiration = expiration + 200;
+    client.extend_allowance(&admin, &spender, &new_expiration);
+
+    // Amount is unchanged; only the expiration ledger moved forward.
+    assert_eq!(client.allowance(&admin, &spender), 500);
+
+    // Ledger advances past the original expiration but before the extended one:
+    // the allowance must still be usable.
+    env.ledger()
+        .with_mut(|l| l.sequence_number = expiration + 1);
+    assert_eq!(client.allowance(&admin, &spender), 500);
+}
+
+#[test]
+fn test_extend_allowance_requires_later_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+
+    client.mint(&admin, &1000, &minter);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&admin, &spender, &500, &expiration);
+
+    let result = client.try_extend_allowance(&admin, &spender, &expiration);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidExpiration)));
+
+    let result = client.try_extend_allowance(&admin, &spender, &(expiration - 1));
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidExpiration)));
+}
+
+#[test]
+fn test_extend_allowance_fails_without_existing_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+
+    let result = client.try_extend_allowance(&admin, &spender, &(env.ledger().sequence() + 100));
+    assert_eq!(result, Err(Ok(crate::errors::Error::AllowanceNotFound)));
+}
+
+#[test]
+fn test_extend_allowance_fails_after_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let spender = Address::generate(&env);
+
+    client.mint(&admin, &1000, &minter);
+    let current = env.ledger().sequence();
+    let expiration = current + 10;
+    client.approve(&admin, &spender, &500, &expiration);
+
+    // Move past expiration before attempting to extend.
+    env.ledger()
+        .with_mut(|l| l.sequence_number = expiration + 1);
+    let result = client.try_extend_allowance(&admin, &spender, &(expiration + 100));
+    assert_eq!(result, Err(Ok(crate::errors::Error::AllowanceExpired)));
+}

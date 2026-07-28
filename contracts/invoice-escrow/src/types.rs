@@ -13,7 +13,9 @@ pub enum StorageKey {
     Escrow(soroban_sdk::Symbol),
     /// Persistent: funder amounts by (invoice_id, funder_address).
     FunderAmount(soroban_sdk::Symbol, soroban_sdk::Address),
-    /// Persistent: whether a given address is whitelisted to fund (buy) escrows.
+    /// Persistent: highest nonce consumed for a signed off-chain approval, by buyer address.
+    Nonce(soroban_sdk::Address),
+    /// Persistent: buyer whitelist status by buyer address.
     BuyerWhitelist(soroban_sdk::Address),
 }
 

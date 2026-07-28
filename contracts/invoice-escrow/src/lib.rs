@@ -187,18 +187,52 @@ impl InvoiceEscrow {
         amount: i128,
     ) -> Result<(), Error> {
         buyer.require_auth();
+        Self::fund_escrow_core(&env, invoice_id, &buyer, amount)
+    }
+
+    /// Fund the escrow on behalf of `buyer` using a signed off-chain approval that a relayer
+    /// submits on their behalf. `buyer` authorizes exactly this `(invoice_id, amount, nonce)`
+    /// tuple, and `nonce` must be strictly greater than the last nonce consumed by `buyer` so
+    /// the same signed approval cannot be replayed.
+    pub fn fund_escrow_signed(
+        env: Env,
+        invoice_id: Symbol,
+        buyer: Address,
+        amount: i128,
+        nonce: u64,
+    ) -> Result<(), Error> {
+        buyer.require_auth_for_args((invoice_id.clone(), amount, nonce).into_val(&env));
+
+        let last_nonce = storage::get_nonce(&env, &buyer);
+        if nonce <= last_nonce {
+            return Err(Error::NonceAlreadyUsed);
+        }
+
+        Self::fund_escrow_core(&env, invoice_id.clone(), &buyer, amount)?;
+
+        storage::set_nonce(&env, &buyer, nonce);
+        events::escrow_funded_signed(&env, invoice_id, &buyer, amount, nonce);
+        Ok(())
+    }
+
+    /// Shared funding logic used by both the directly-authorized and signed-approval entry points.
+    fn fund_escrow_core(
+        env: &Env,
+        invoice_id: Symbol,
+        buyer: &Address,
+        amount: i128,
+    ) -> Result<(), Error> {
         // Fail fast: validate amount before hitting storage.
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        let config = storage::get_config(env).ok_or(Error::NotInit)?;
         ensure_not_paused(&config)?;
         if config.whitelist_enabled && !storage::is_whitelisted(&env, &buyer) {
             return Err(Error::NotWhitelisted);
         }
 
-        let mut data =
-            storage::get_escrow(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
+        let mut data = storage::get_escrow(env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
         if data.status == EscrowStatus::Cancelled {
             return Err(Error::EscrowCancelled);
         }
@@ -212,28 +246,23 @@ impl InvoiceEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        let token = token::Client::new(&env, &data.token);
+        let token = token::Client::new(env, &data.token);
         let contract = env.current_contract_address();
-        token.transfer(&buyer, &contract, &amount);
+        token.transfer(buyer, &contract, &amount);
 
         // Mint invoice tokens to the buyer to represent their ownership share
         env.invoke_contract::<()>(
             &data.inv_token,
-            &Symbol::new(&env, "mint"),
-            soroban_sdk::vec![
-                &env,
-                buyer.to_val(),
-                amount.into_val(&env),
-                contract.to_val()
-            ],
+            &Symbol::new(env, "mint"),
+            soroban_sdk::vec![env, buyer.to_val(), amount.into_val(env), contract.to_val()],
         );
 
         // Track this funder's contribution
-        let current_funder_amt = storage::get_funder_amount(&env, invoice_id.clone(), &buyer);
+        let current_funder_amt = storage::get_funder_amount(env, invoice_id.clone(), buyer);
         let new_funder_amt = current_funder_amt
             .checked_add(amount)
             .ok_or(Error::Overflow)?;
-        storage::set_funder_amount(&env, invoice_id.clone(), &buyer, new_funder_amt);
+        storage::set_funder_amount(env, invoice_id.clone(), buyer, new_funder_amt);
 
         data.funded_amt = new_funded;
 
@@ -247,11 +276,11 @@ impl InvoiceEscrow {
             data.status = EscrowStatus::Funded;
         }
 
-        storage::set_escrow(&env, invoice_id.clone(), &data);
+        storage::set_escrow(env, invoice_id.clone(), &data);
         events::escrow_funded(
-            &env,
+            env,
             invoice_id.clone(),
-            &buyer,
+            buyer,
             amount,
             data.funded_amt,
             data.purchase_price,
@@ -561,6 +590,29 @@ impl InvoiceEscrow {
     pub fn paused(env: Env) -> Result<bool, Error> {
         let config = storage::get_config(&env).ok_or(Error::NotInit)?;
         Ok(config.paused)
+    }
+
+    /// Reclaim persistent storage for an escrow that has reached a terminal state
+    /// (Settled, Refunded, or Cancelled). Callable only by the seller or the admin.
+    /// The escrow and its per-funder contribution record are removed permanently;
+    /// terminal-state escrows are never mutated again, so this is safe to prune.
+    pub fn cleanup_escrow(env: Env, invoice_id: Symbol, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        let data = storage::get_escrow(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
+        if caller != data.seller && caller != config.admin {
+            return Err(Error::Unauthorized);
+        }
+        match data.status {
+            EscrowStatus::Settled | EscrowStatus::Refunded | EscrowStatus::Cancelled => {}
+            _ => return Err(Error::EscrowNotSettled),
+        }
+        if let Some(funder) = &data.funder {
+            storage::set_funder_amount(&env, invoice_id.clone(), funder, 0);
+        }
+        storage::remove_escrow(&env, invoice_id.clone());
+        events::escrow_cleaned_up(&env, invoice_id);
+        Ok(())
     }
 }
 
