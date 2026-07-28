@@ -63,3 +63,38 @@ pub fn refund_distributed(
     );
     env.events().publish(topics, (funder, amount));
 }
+
+/// Issue #130: Referral fee cut payout event.
+/// Topics: (referral_paid, token); Data: (referral_recipient, amount).
+pub fn referral_paid(env: &Env, token: &Address, referral: &Address, amount: i128) {
+    let topics = (Symbol::new(env, "referral_paid"), token.clone());
+    env.events().publish(topics, (referral.clone(), amount));
+}
+
+/// Issue #126: Per-asset multi-currency distribution audit event.
+/// Topics: (AssetDistributed, token); Data: (recipients, amounts, total).
+pub fn asset_distributed(
+    env: &Env,
+    token: &Address,
+    recipients: &Vec<Address>,
+    amounts: &Vec<i128>,
+    total: i128,
+) {
+    let topics = (Symbol::new(env, "AssetDistributed"), token.clone());
+    env.events()
+        .publish(topics, (recipients.clone(), amounts.clone(), total));
+}
+
+/// Issue #125: Emergency withdrawal audit event.
+/// Topics: (EmergencyWithdrawal, token); Data: (admin, to, amount).
+pub fn emergency_withdrawal(
+    env: &Env,
+    admin: &Address,
+    token: &Address,
+    to: &Address,
+    amount: i128,
+) {
+    let topics = (Symbol::new(env, "EmergencyWithdrawal"), token.clone());
+    env.events()
+        .publish(topics, (admin.clone(), to.clone(), amount));
+}

@@ -5,7 +5,7 @@ mod events;
 mod storage;
 mod types;
 
-pub use types::DistributionState;
+pub use types::{AssetRoute, DistributionSplit, DistributionState};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
@@ -30,6 +30,103 @@ fn get_distribution_state(
             refund_distributed: false,
         },
     )
+}
+
+/// Issue #127: Acquire the re-entrancy lock. Returns `ReentrancyDetected` if a
+/// guarded entrypoint is already executing. Storage writes made after acquiring
+/// the lock are rolled back automatically on any error return, so the lock is
+/// cleared on both the success path (via `release_lock`) and any error path.
+fn acquire_lock(env: &Env) -> Result<(), Error> {
+    if storage::is_locked(env) {
+        return Err(Error::ReentrancyDetected);
+    }
+    storage::set_lock(env, true);
+    Ok(())
+}
+
+/// Issue #127: Release the re-entrancy lock on normal completion.
+fn release_lock(env: &Env) {
+    storage::set_lock(env, false);
+}
+
+/// Issue #126 / #130: Distribute a single asset `amount` across `split`, taking the
+/// optional referral cut off the top and allocating any rounding remainder to the
+/// primary (index 0) recipient so the full amount is distributed with no dust.
+fn distribute_split(
+    env: &Env,
+    token: &Address,
+    from: &Address,
+    amount: i128,
+    split: &DistributionSplit,
+) -> Result<(), Error> {
+    split.validate()?;
+    if amount <= 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    let token_client = token::Client::new(env, token);
+
+    // Referral cut off the top.
+    let referral_amount = if split.referral_bps > 0 {
+        amount
+            .checked_mul(split.referral_bps as i128)
+            .ok_or(Error::Overflow)?
+            .checked_div(10_000)
+            .ok_or(Error::Overflow)?
+    } else {
+        0
+    };
+
+    // Compute recipient amounts: recipients[1..] by their basis-point share and
+    // recipients[0] as the exact residual so the total equals `amount`.
+    let n = split.recipients.len();
+    let mut allocated = referral_amount;
+    let mut rec_amounts: Vec<i128> = Vec::new(env);
+    for i in 0..n {
+        if i == 0 {
+            rec_amounts.push_back(0); // residual placeholder, set below
+        } else {
+            let share = split.shares_bps.get(i).ok_or(Error::InvalidSplit)?;
+            let amt = amount
+                .checked_mul(share as i128)
+                .ok_or(Error::Overflow)?
+                .checked_div(10_000)
+                .ok_or(Error::Overflow)?;
+            allocated = allocated.checked_add(amt).ok_or(Error::Overflow)?;
+            rec_amounts.push_back(amt);
+        }
+    }
+    let primary = amount.checked_sub(allocated).ok_or(Error::Overflow)?;
+    if primary < 0 {
+        return Err(Error::InvalidSplit);
+    }
+    rec_amounts.set(0, primary);
+
+    let mut recipients_out: Vec<Address> = Vec::new(env);
+    let mut amounts_out: Vec<i128> = Vec::new(env);
+
+    // Pay the referral cut first.
+    if referral_amount > 0 {
+        let referral = split.referral.clone().ok_or(Error::InvalidReferralCut)?;
+        token_client.transfer(from, &referral, &referral_amount);
+        events::referral_paid(env, token, &referral, referral_amount);
+        recipients_out.push_back(referral);
+        amounts_out.push_back(referral_amount);
+    }
+
+    // Pay the primary recipients.
+    for i in 0..n {
+        let recipient = split.recipients.get(i).ok_or(Error::InvalidSplit)?;
+        let amt = rec_amounts.get(i).ok_or(Error::InvalidSplit)?;
+        if amt > 0 {
+            token_client.transfer(from, &recipient, &amt);
+        }
+        recipients_out.push_back(recipient);
+        amounts_out.push_back(amt);
+    }
+
+    events::asset_distributed(env, token, &recipients_out, &amounts_out, amount);
+    Ok(())
 }
 
 #[contractimpl]
@@ -61,6 +158,10 @@ impl PaymentDistributor {
         amounts: Vec<i128>,
         escrow_status: u32,
     ) -> Result<(), Error> {
+        // Issue #127: Re-entrancy barrier. Any error return below rolls back this
+        // storage write, so the lock is cleared on both success and failure paths.
+        acquire_lock(&env)?;
+
         storage::get_admin(&env).ok_or(Error::NotInit)?;
         escrow_contract.require_auth();
 
@@ -75,7 +176,7 @@ impl PaymentDistributor {
         let seller = addresses.get(1).ok_or(Error::InvalidAmount)?;
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
         let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
-        
+
         // Issue #124: Validate fee BPS does not exceed maximum (10,000 = 100%)
         if fee_bps_u32 > MAX_FEE_BPS {
             return Err(Error::InvalidBps);
@@ -100,7 +201,7 @@ impl PaymentDistributor {
             .ok_or(Error::Overflow)?;
 
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
-        
+
         // Seller receives: payment_amount - investor_amount - platform_fee
         // This automatically absorbs any rounding loss
         let seller_amount = payment_amount
@@ -119,7 +220,7 @@ impl PaymentDistributor {
             .ok_or(Error::Overflow)?
             .checked_add(platform_fee)
             .ok_or(Error::Overflow)?;
-        
+
         if total_distribution != payment_amount {
             return Err(Error::InvalidAmount);
         }
@@ -130,7 +231,7 @@ impl PaymentDistributor {
 
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
-        
+
         token_client.transfer(&contract_addr, &seller, &seller_amount);
         token_client.transfer(&contract_addr, &funder, &investor_amount);
         if platform_fee > 0 {
@@ -156,6 +257,8 @@ impl PaymentDistributor {
             escrow_status,
         );
 
+        // Issue #127: Clear the re-entrancy lock on normal completion.
+        release_lock(&env);
         Ok(())
     }
 
@@ -200,6 +303,89 @@ impl PaymentDistributor {
         Ok(())
     }
 
+    /// Issue #126: Multi-currency payment distribution routing.
+    ///
+    /// Routes each supplied asset to its recipients according to its split config.
+    /// The tokens must already be held by this contract. Admin-only.
+    ///
+    /// Reuses the single-asset [`distribute_split`] logic and emits an
+    /// `AssetDistributed` event per asset (and a `referral_paid` event when a
+    /// referral cut is taken).
+    pub fn distribute_multi_asset(
+        env: Env,
+        admin: Address,
+        routes: Vec<AssetRoute>,
+    ) -> Result<(), Error> {
+        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+
+        if routes.is_empty() {
+            return Err(Error::EmptyAssetList);
+        }
+
+        // Reject duplicate assets: each token must appear at most once.
+        let len = routes.len();
+        for i in 0..len {
+            let token_i = routes.get(i).ok_or(Error::EmptyAssetList)?.token;
+            for j in (i + 1)..len {
+                let token_j = routes.get(j).ok_or(Error::EmptyAssetList)?.token;
+                if token_i == token_j {
+                    return Err(Error::AssetMismatch);
+                }
+            }
+        }
+
+        // Issue #127: Guard the external transfers against re-entrancy.
+        acquire_lock(&env)?;
+
+        let contract_addr = env.current_contract_address();
+        for i in 0..len {
+            let route = routes.get(i).ok_or(Error::EmptyAssetList)?;
+            distribute_split(
+                &env,
+                &route.token,
+                &contract_addr,
+                route.amount,
+                &route.split,
+            )?;
+        }
+
+        release_lock(&env);
+        Ok(())
+    }
+
+    /// Issue #125: Emergency withdrawal safeguard.
+    ///
+    /// Admin-only escape hatch that transfers the contract's entire held balance of
+    /// `token` to a safe `to` address. Fails with `NothingToWithdraw` when the
+    /// contract holds no balance of the token. Emits an `EmergencyWithdrawal` event.
+    pub fn emergency_withdraw(
+        env: Env,
+        admin: Address,
+        token: Address,
+        to: Address,
+    ) -> Result<(), Error> {
+        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+
+        let token_client = token::Client::new(&env, &token);
+        let contract_addr = env.current_contract_address();
+        let balance = token_client.balance(&contract_addr);
+        if balance <= 0 {
+            return Err(Error::NothingToWithdraw);
+        }
+
+        token_client.transfer(&contract_addr, &to, &balance);
+        events::emergency_withdrawal(&env, &admin, &token, &to, balance);
+        Ok(())
+    }
+
     /// View: return the current admin.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)
@@ -208,7 +394,11 @@ impl PaymentDistributor {
     /// Issue #122: Set the fee recipient address for platform fees.
     /// Only the admin can update the fee recipient.
     /// Emits a fee_recipient_updated event for audit trails.
-    pub fn set_fee_recipient(env: Env, admin: Address, new_recipient: Address) -> Result<(), Error> {
+    pub fn set_fee_recipient(
+        env: Env,
+        admin: Address,
+        new_recipient: Address,
+    ) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
@@ -224,9 +414,8 @@ impl PaymentDistributor {
     /// View: return the current fee recipient (defaults to admin if not set).
     pub fn get_fee_recipient(env: Env) -> Result<Address, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)?;
-        Ok(storage::get_fee_recipient(&env).unwrap_or_else(|| {
-            storage::get_admin(&env).expect("Admin must be set")
-        }))
+        Ok(storage::get_fee_recipient(&env)
+            .unwrap_or_else(|| storage::get_admin(&env).expect("Admin must be set")))
     }
 
     /// View: return tracked distribution progress for an escrow invoice.
