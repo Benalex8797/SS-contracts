@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, "1.80.0"]
+        toolchain: [stable, "1.84.0"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
