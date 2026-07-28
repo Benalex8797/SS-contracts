@@ -35,4 +35,12 @@ pub enum Error {
     InvalidMetadata = 13,
     /// No allowance exists for (from, spender), so its expiration cannot be extended.
     AllowanceNotFound = 14,
+    /// Balance is sufficient for the transfer amount but not for the fee.
+    InsufficientBalanceForFee = 15,
+    /// mint_batch vectors have mismatched lengths.
+    BatchLengthMismatch = 16,
+    /// Fee basis points value is out of allowed range (0..=10_000).
+    InvalidFeeBps = 17,
+    /// Role has not been granted to anyone, so there is no role admin.
+    RoleNotGranted = 18,
 }

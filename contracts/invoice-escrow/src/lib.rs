@@ -191,17 +191,26 @@ impl InvoiceEscrow {
     }
 
     /// Fund the escrow on behalf of `buyer` using a signed off-chain approval that a relayer
-    /// submits on their behalf. `buyer` authorizes exactly this `(invoice_id, amount, nonce)`
+    /// submits on their behalf. `buyer` authorizes exactly this `(invoice_id, amount, nonce, expiry)`
     /// tuple, and `nonce` must be strictly greater than the last nonce consumed by `buyer` so
     /// the same signed approval cannot be replayed.
+    ///
+    /// Issue #183: Includes an `expiry` timestamp. If the ledger timestamp exceeds `expiry`
+    /// the signature is rejected, limiting the window for replay attacks.
     pub fn fund_escrow_signed(
         env: Env,
         invoice_id: Symbol,
         buyer: Address,
         amount: i128,
         nonce: u64,
+        expiry: u64,
     ) -> Result<(), Error> {
-        buyer.require_auth_for_args((invoice_id.clone(), amount, nonce).into_val(&env));
+        buyer.require_auth_for_args((invoice_id.clone(), amount, nonce, expiry).into_val(&env));
+
+        let current_ts = env.ledger().timestamp();
+        if current_ts > expiry {
+            return Err(Error::SignatureExpired);
+        }
 
         let last_nonce = storage::get_nonce(&env, &buyer);
         if nonce <= last_nonce {
@@ -285,7 +294,7 @@ impl InvoiceEscrow {
         storage::set_escrow(env, invoice_id.clone(), &data);
         events::escrow_funded(
             env,
-            invoice_id,
+            invoice_id.clone(),
             buyer,
             amount,
             data.funded_amt,

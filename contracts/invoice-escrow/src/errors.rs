@@ -44,4 +44,8 @@ pub enum Error {
     NonceAlreadyUsed = 18,
     /// Escrow is not yet in a terminal state (Settled, Refunded, or Cancelled) and cannot be cleaned up.
     EscrowNotSettled = 19,
+    /// Buyer is not whitelisted to fund escrows.
+    NotWhitelisted = 20,
+    /// Off-chain signature has expired (timestamp too old).
+    SignatureExpired = 21,
 }

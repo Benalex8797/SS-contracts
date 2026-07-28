@@ -114,6 +114,12 @@ pub fn emergency_withdrawal(
         .publish(topics, (admin.clone(), to.clone(), amount));
 }
 
+/// Issue #182: Role grant/revoke event.
+pub fn role_grant_updated(env: &Env, role: &Symbol, account: &Address, granted: bool) {
+    let topics = (Symbol::new(env, "role_grant_updated"), role.clone(), account.clone());
+    env.events().publish(topics, granted);
+}
+
 /// Issue #119: Dust amount swept event.
 /// Topics: (DustSwept, token); Data: (admin, to, amount).
 pub fn dust_swept(
