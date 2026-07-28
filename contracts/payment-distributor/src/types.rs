@@ -13,6 +13,10 @@ pub enum StorageKey {
     Locked,
     /// Whitelisted escrow contract address allowed to call distribute_payment (Issue #121).
     EscrowContract,
+    /// Role admin for a given role (Issue #182).
+    RoleAdmin(soroban_sdk::Symbol),
+    /// Role grant flag for a given (role, account) pair (Issue #182).
+    RoleGrant(soroban_sdk::Symbol, soroban_sdk::Address),
 }
 
 #[contracttype]

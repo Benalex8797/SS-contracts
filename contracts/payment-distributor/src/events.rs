@@ -113,3 +113,9 @@ pub fn emergency_withdrawal(
     env.events()
         .publish(topics, (admin.clone(), to.clone(), amount));
 }
+
+/// Issue #182: Role grant/revoke event.
+pub fn role_grant_updated(env: &Env, role: &Symbol, account: &Address, granted: bool) {
+    let topics = (Symbol::new(env, "role_grant_updated"), role.clone(), account.clone());
+    env.events().publish(topics, granted);
+}

@@ -9,6 +9,8 @@ pub use types::{AssetRoute, DistributionPreview, DistributionSplit, Distribution
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
+const OPERATOR_ROLE: &str = "operator";
+
 use errors::Error;
 use types::MAX_FEE_BPS;
 
@@ -310,6 +312,7 @@ impl PaymentDistributor {
         amounts: Vec<i128>,
         escrow_status: u32,
     ) -> Result<(), Error> {
+        acquire_lock(&env)?;
         storage::get_admin(&env).ok_or(Error::NotInit)?;
         escrow_contract.require_auth();
 
@@ -344,6 +347,7 @@ impl PaymentDistributor {
         storage::set_distribution(&env, &escrow_contract, &invoice_id, &state);
 
         events::refund_distributed(&env, &escrow_contract, &invoice_id, &funder, refund_amount);
+        release_lock(&env);
         Ok(())
     }
 
@@ -357,14 +361,16 @@ impl PaymentDistributor {
     /// referral cut is taken).
     pub fn distribute_multi_asset(
         env: Env,
-        admin: Address,
+        caller: Address,
         routes: Vec<AssetRoute>,
     ) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
-        if admin != stored_admin {
+        let operator_role = Symbol::new(&env, OPERATOR_ROLE);
+        let is_operator = storage::has_role(&env, &operator_role, &caller);
+        if caller != stored_admin && !is_operator {
             return Err(Error::Unauthorized);
         }
-        admin.require_auth();
+        caller.require_auth();
 
         if routes.is_empty() {
             return Err(Error::EmptyAssetList);
