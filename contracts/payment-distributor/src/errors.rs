@@ -33,4 +33,6 @@ pub enum Error {
     EscrowContractNotSet = 18,
     /// Caller is not the whitelisted escrow contract (Issue #131).
     UnauthorizedEscrowOrigin = 19,
+    /// Role has not been granted to anyone (Issue #182).
+    RoleNotGranted = 20,
 }

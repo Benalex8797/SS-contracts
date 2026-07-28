@@ -9,6 +9,8 @@ pub use types::{AssetRoute, DistributionQuote, DistributionSplit, DistributionSt
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
+const OPERATOR_ROLE: &str = "operator";
+
 use errors::Error;
 use types::MAX_FEE_BPS;
 
@@ -277,6 +279,7 @@ impl PaymentDistributor {
         amounts: Vec<i128>,
         escrow_status: u32,
     ) -> Result<(), Error> {
+        acquire_lock(&env)?;
         storage::get_admin(&env).ok_or(Error::NotInit)?;
         escrow_contract.require_auth();
 
@@ -306,6 +309,7 @@ impl PaymentDistributor {
         storage::set_distribution(&env, &escrow_contract, &invoice_id, &state);
 
         events::refund_distributed(&env, &escrow_contract, &invoice_id, &funder, refund_amount);
+        release_lock(&env);
         Ok(())
     }
 
@@ -319,14 +323,16 @@ impl PaymentDistributor {
     /// referral cut is taken).
     pub fn distribute_multi_asset(
         env: Env,
-        admin: Address,
+        caller: Address,
         routes: Vec<AssetRoute>,
     ) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
-        if admin != stored_admin {
+        let operator_role = Symbol::new(&env, OPERATOR_ROLE);
+        let is_operator = storage::has_role(&env, &operator_role, &caller);
+        if caller != stored_admin && !is_operator {
             return Err(Error::Unauthorized);
         }
-        admin.require_auth();
+        caller.require_auth();
 
         if routes.is_empty() {
             return Err(Error::EmptyAssetList);
@@ -457,6 +463,54 @@ impl PaymentDistributor {
     pub fn get_escrow_contract(env: Env) -> Result<Address, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)?;
         storage::get_escrow_contract(&env).ok_or(Error::EscrowContractNotSet)
+    }
+
+    // ==================== Issue #182: Role-based access control ====================
+
+    /// Grant a role to an account. Only the admin can grant roles.
+    pub fn grant_role(
+        env: Env,
+        admin: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        storage::set_role_grant(&env, &role, &account, true);
+        events::role_grant_updated(&env, &role, &account, true);
+        Ok(())
+    }
+
+    /// Revoke a role from an account. Only the admin can revoke roles.
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        storage::set_role_grant(&env, &role, &account, false);
+        events::role_grant_updated(&env, &role, &account, false);
+        Ok(())
+    }
+
+    /// Check whether an account has been granted a role.
+    pub fn has_role(env: Env, role: Symbol, account: Address) -> Result<bool, Error> {
+        storage::get_admin(&env).ok_or(Error::NotInit)?;
+        Ok(storage::has_role(&env, &role, &account))
+    }
+
+    /// Get the admin address for a role.
+    pub fn get_role_admin(env: Env, role: Symbol) -> Result<Address, Error> {
+        storage::get_admin(&env).ok_or(Error::NotInit)?;
+        storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)
     }
 
     /// Issue #129: Dry-run the `distribute_payment` fee/split calculation

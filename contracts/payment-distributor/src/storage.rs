@@ -90,3 +90,25 @@ pub fn set_escrow_contract(env: &Env, escrow_contract: &Address) {
 pub fn get_escrow_contract(env: &Env) -> Option<Address> {
     env.storage().instance().get(&StorageKey::EscrowContract)
 }
+
+// ==================== Role-based access control (Issue #182) ====================
+
+pub fn get_role_admin(env: &Env, role: &Symbol) -> Option<Address> {
+    env.storage().instance().get(&StorageKey::RoleAdmin(role.clone()))
+}
+
+pub fn has_role(env: &Env, role: &Symbol, account: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&StorageKey::RoleGrant(role.clone(), account.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_role_grant(env: &Env, role: &Symbol, account: &Address, granted: bool) {
+    let key = StorageKey::RoleGrant(role.clone(), account.clone());
+    if granted {
+        env.storage().instance().set(&key, &true);
+    } else {
+        env.storage().instance().remove(&key);
+    }
+}

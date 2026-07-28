@@ -14,7 +14,12 @@ mod types;
 use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;
-use crate::types::{TokenMetadata, MAX_DECIMALS};
+use crate::types::{OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
+
+const ADMIN_ROLE: &str = "admin";
+const MINTER_ROLE: &str = "minter";
+const PAUSER_ROLE: &str = "pauser";
+const TRANSFER_LOCKER_ROLE: &str = "transfer_locker";
 
 #[contract]
 pub struct InvoiceToken;
@@ -212,6 +217,10 @@ impl InvoiceToken {
         if amount < 0 {
             return Err(Error::InvalidAmount);
         }
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         let ledger = env.ledger().sequence();
         if amount != 0 && expiration_ledger < ledger {
             return Err(Error::InvalidExpiration);
@@ -231,7 +240,10 @@ impl InvoiceToken {
         new_expiration_ledger: u32,
     ) -> Result<(), Error> {
         from.require_auth();
-        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         let allow =
             storage::get_allowance_data(&env, &from, &spender).ok_or(Error::AllowanceNotFound)?;
         let ledger = env.ledger().sequence();
@@ -249,7 +261,10 @@ impl InvoiceToken {
     /// Revoke `spender`'s allowance. Requires `from` authorization.
     pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
         from.require_auth();
-        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         storage::set_allowance(&env, &from, &spender, 0, 0);
         events::approval_revoked_event(&env, &from, &spender);
         Ok(())
@@ -449,10 +464,10 @@ impl InvoiceToken {
         // Validate amounts and compute total
         let mut total_amount: i128 = 0;
         for amt in amounts.iter() {
-            if *amt <= 0 {
+            if amt <= 0 {
                 return Err(Error::InvalidAmount);
             }
-            total_amount = total_amount.checked_add(*amt).ok_or(Error::Overflow)?;
+            total_amount = total_amount.checked_add(amt).ok_or(Error::Overflow)?;
         }
         // Update total supply once
         let new_total_supply = storage::get_total_supply(&env)
@@ -463,11 +478,11 @@ impl InvoiceToken {
         for i in 0..to.len() {
             let recipient = to.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
-            let new_bal = storage::get_balance(&env, recipient)
-                .checked_add(*amount)
+            let new_bal = storage::get_balance(&env, &recipient)
+                .checked_add(amount)
                 .ok_or(Error::Overflow)?;
-            storage::set_balance(&env, recipient, new_bal);
-            events::mint_event(&env, recipient, *amount);
+            storage::set_balance(&env, &recipient, new_bal);
+            events::mint_event(&env, &recipient, amount);
         }
         Ok(())
     }
