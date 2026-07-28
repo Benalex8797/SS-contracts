@@ -20,6 +20,18 @@ pub fn get_fee_recipient(env: &Env) -> Option<Address> {
     env.storage().instance().get(&StorageKey::FeeRecipient)
 }
 
+/// Re-entrancy guard flag accessors (Issue #127).
+pub fn is_locked(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&StorageKey::Locked)
+        .unwrap_or(false)
+}
+
+pub fn set_lock(env: &Env, locked: bool) {
+    env.storage().instance().set(&StorageKey::Locked, &locked);
+}
+
 pub fn get_distribution(
     env: &Env,
     escrow: &Address,
