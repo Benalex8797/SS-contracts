@@ -434,7 +434,12 @@ impl InvoiceToken {
 
     /// Mint tokens to multiple addresses in a batch. Callable only by admin or minter.
     /// `to` and `amounts` vectors must be of equal length. Each amount must be > 0.
-    pub fn mint_batch(env: Env, to: Vec<Address>, amounts: Vec<i128>, by: Address) -> Result<(), Error> {
+    pub fn mint_batch(
+        env: Env,
+        to: Vec<Address>,
+        amounts: Vec<i128>,
+        by: Address,
+    ) -> Result<(), Error> {
         by.require_auth();
         if to.len() != amounts.len() {
             return Err(Error::BatchLengthMismatch);
