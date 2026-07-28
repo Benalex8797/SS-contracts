@@ -108,7 +108,7 @@
                   }
                 },
                 {
-                  "u64": 10000
+                  "u64": 100000
                 },
                 {
                   "address": "CD3FXVGYSLQFFTW3UH6WFF2OKZH7VERGZJZAMJHTGHBWO4F6URWEJL23"
@@ -117,7 +117,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "bytes": "746573745f696e766f6963655f64617461000000000000000000000000000000"
+                  "bytes": "636f6d6d69746d656e7400000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -178,6 +178,7 @@
         }
       ]
     ],
+    [],
     [],
     [],
     [],
@@ -517,7 +518,7 @@
                         "symbol": "commitment"
                       },
                       "val": {
-                        "bytes": "746573745f696e766f6963655f64617461000000000000000000000000000000"
+                        "bytes": "636f6d6d69746d656e7400000000000000000000000000000000000000000000"
                       }
                     },
                     {
@@ -533,7 +534,7 @@
                         "symbol": "due_dt"
                       },
                       "val": {
-                        "u64": 10000
+                        "u64": 100000
                       }
                     },
                     {
@@ -885,7 +886,7 @@
                                 "symbol": "name"
                               },
                               "val": {
-                                "string": "Invoice #1"
+                                "string": "Test Invoice Token"
                               }
                             },
                             {
@@ -901,7 +902,7 @@
                                 "symbol": "symbol"
                               },
                               "val": {
-                                "string": "INV1"
+                                "string": "TIT"
                               }
                             },
                             {

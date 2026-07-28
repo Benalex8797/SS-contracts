@@ -1,17 +1,25 @@
 //! Invoice Token (SEP-41) contract for StellarSettle.
 //!
 //! Implements a fungible token representing fractional ownership of an invoice,
-//! with mint (admin/escrow), burn, allowances, and optional transfer lock.
+//! with mint (admin/escrow), burn, allowances, optional transfer lock,
+//! fee deduction, role-based admin, nonce tracking, and ownership history.
+
+#![no_std]
 
 mod errors;
 mod events;
 mod storage;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol};
+use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;
-use crate::types::TokenMetadata;
+use crate::types::{OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
+
+const ADMIN_ROLE: &str = "admin";
+const MINTER_ROLE: &str = "minter";
+const PAUSER_ROLE: &str = "pauser";
+const TRANSFER_LOCKER_ROLE: &str = "transfer_locker";
 
 #[contract]
 pub struct InvoiceToken;
@@ -31,9 +39,16 @@ impl InvoiceToken {
         if storage::get_metadata(&env).is_some() {
             return Err(Error::AlreadyInit);
         }
+        if decimals > MAX_DECIMALS {
+            return Err(Error::InvalidDecimals);
+        }
+        // SEP-41 metadata (name, symbol) must be meaningful, not empty placeholders.
+        if name.is_empty() || symbol.is_empty() {
+            return Err(Error::InvalidMetadata);
+        }
         let meta = TokenMetadata {
             admin: admin.clone(),
-            minter,
+            minter: minter.clone(),
             name,
             symbol,
             decimals,
@@ -43,6 +58,27 @@ impl InvoiceToken {
         };
         storage::set_metadata(&env, &meta);
         storage::set_total_supply(&env, 0);
+
+        // Seed default roles: admin gets all roles, minter gets minter role.
+        let admin_role_sym = Symbol::new(&env, ADMIN_ROLE);
+        let minter_role_sym = Symbol::new(&env, MINTER_ROLE);
+        let pauser_role_sym = Symbol::new(&env, PAUSER_ROLE);
+        let tlock_role_sym = Symbol::new(&env, TRANSFER_LOCKER_ROLE);
+
+        // Admin is the default admin for every role.
+        for role in [
+            &admin_role_sym,
+            &minter_role_sym,
+            &pauser_role_sym,
+            &tlock_role_sym,
+        ] {
+            storage::set_role_admin(&env, role, &admin);
+            storage::set_role_grant(&env, role, &admin, true);
+        }
+
+        // Grant minter role to minter address.
+        storage::set_role_grant(&env, &minter_role_sym, &minter, true);
+
         Ok(())
     }
 
@@ -73,15 +109,36 @@ impl InvoiceToken {
         Ok(storage::get_balance(&env, &id))
     }
 
+    /// Return balances for a batch of addresses, preserving the input order.
+    pub fn balance_batch(env: Env, ids: Vec<Address>) -> Result<Vec<i128>, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let mut balances = Vec::new(&env);
+        for id in ids.iter() {
+            balances.push_back(storage::get_balance(&env, &id));
+        }
+        Ok(balances)
+    }
+
     pub fn allowance(env: Env, from: Address, spender: Address) -> Result<i128, Error> {
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let ledger = env.ledger().sequence();
         Ok(storage::get_allowance(&env, &from, &spender, ledger))
     }
 
-    // ---------- SEP-41 transfer ----------
+    // ---------- Issue #106: Nonce query ----------
+
+    /// Returns the current nonce for the given address (used in EIP-2612-style permits).
+    pub fn get_nonce(env: Env, account: Address) -> Result<u64, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let nonce = storage::get_nonce(&env, &account);
+        events::nonce_queried_event(&env, &account, nonce);
+        Ok(nonce)
+    }
+
+    // ---------- SEP-41 transfer (with Issue #113 fee deduction) ----------
 
     /// Transfer amount from `from` to `to`. Requires `from` auth.
+    /// When a fee is configured, the fee is deducted from `from` and sent to the admin.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), Error> {
         from.require_auth();
         if amount <= 0 {
@@ -94,15 +151,54 @@ impl InvoiceToken {
         if meta.transfer_locked && from != meta.admin {
             return Err(Error::TransferLocked);
         }
+
+        let fee_bps = storage::get_fee_bps(&env);
+        let fee_amount = if fee_bps > 0 {
+            amount
+                .checked_mul(fee_bps)
+                .and_then(|v| v.checked_div(10_000))
+                .ok_or(Error::Overflow)?
+        } else {
+            0
+        };
+
+        let total_debit = amount.checked_add(fee_amount).ok_or(Error::Overflow)?;
+
         let from_balance = storage::get_balance(&env, &from);
-        if from_balance < amount {
+        if from_balance < total_debit {
+            if fee_amount > 0 && from_balance >= amount && from_balance < total_debit {
+                return Err(Error::InsufficientBalanceForFee);
+            }
             return Err(Error::InsufficientBalance);
         }
-        storage::set_balance(&env, &from, from_balance - amount);
+
+        storage::set_balance(&env, &from, from_balance - total_debit);
         let to_balance = storage::get_balance(&env, &to)
             .checked_add(amount)
             .ok_or(Error::Overflow)?;
         storage::set_balance(&env, &to, to_balance);
+
+        // Send fee to admin if applicable.
+        if fee_amount > 0 {
+            let admin_balance = storage::get_balance(&env, &meta.admin)
+                .checked_add(fee_amount)
+                .ok_or(Error::Overflow)?;
+            storage::set_balance(&env, &meta.admin, admin_balance);
+            events::fee_deducted_event(&env, &from, fee_amount);
+        }
+
+        // Record ownership history for both sender and receiver.
+        let ledger = env.ledger().sequence();
+        let record = OwnershipHistoryRecord {
+            from: from.clone(),
+            to: to.clone(),
+            amount,
+            ledger,
+        };
+        storage::append_token_history(&env, &from, &record);
+        storage::append_token_history(&env, &to, &record);
+        events::history_appended_event(&env, &from, &from, &to, amount);
+
         events::transfer_event(&env, &from, &to, amount);
         Ok(())
     }
@@ -121,12 +217,56 @@ impl InvoiceToken {
         if amount < 0 {
             return Err(Error::InvalidAmount);
         }
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         let ledger = env.ledger().sequence();
         if amount != 0 && expiration_ledger < ledger {
             return Err(Error::InvalidExpiration);
         }
         storage::set_allowance(&env, &from, &spender, amount, expiration_ledger);
         events::approve_event(&env, &from, &spender, amount, expiration_ledger);
+        Ok(())
+    }
+
+    /// Extend the expiration ledger of an existing allowance without changing its amount.
+    /// Requires `from` auth. The new expiration must be strictly later than the current one,
+    /// and the allowance must not already be expired (use `approve` to reinstate an expired one).
+    pub fn extend_allowance(
+        env: Env,
+        from: Address,
+        spender: Address,
+        new_expiration_ledger: u32,
+    ) -> Result<(), Error> {
+        from.require_auth();
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
+        let allow =
+            storage::get_allowance_data(&env, &from, &spender).ok_or(Error::AllowanceNotFound)?;
+        let ledger = env.ledger().sequence();
+        if allow.expiration_ledger < ledger {
+            return Err(Error::AllowanceExpired);
+        }
+        if new_expiration_ledger <= allow.expiration_ledger {
+            return Err(Error::InvalidExpiration);
+        }
+        storage::extend_allowance_expiration(&env, &from, &spender, new_expiration_ledger);
+        events::allowance_extended_event(&env, &from, &spender, new_expiration_ledger);
+        Ok(())
+    }
+
+    /// Revoke `spender`'s allowance. Requires `from` authorization.
+    pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
+        from.require_auth();
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
+        storage::set_allowance(&env, &from, &spender, 0, 0);
+        events::approval_revoked_event(&env, &from, &spender);
         Ok(())
     }
 
@@ -158,10 +298,27 @@ impl InvoiceToken {
         if allow.amount < amount {
             return Err(Error::InsufficientAllowance);
         }
+
+        let fee_bps = storage::get_fee_bps(&env);
+        let fee_amount = if fee_bps > 0 {
+            amount
+                .checked_mul(fee_bps)
+                .and_then(|v| v.checked_div(10_000))
+                .ok_or(Error::Overflow)?
+        } else {
+            0
+        };
+
+        let total_debit = amount.checked_add(fee_amount).ok_or(Error::Overflow)?;
+
         let from_balance = storage::get_balance(&env, &from);
-        if from_balance < amount {
+        if from_balance < total_debit {
+            if fee_amount > 0 && from_balance >= amount && from_balance < total_debit {
+                return Err(Error::InsufficientBalanceForFee);
+            }
             return Err(Error::InsufficientBalance);
         }
+
         storage::set_allowance(
             &env,
             &from,
@@ -169,11 +326,31 @@ impl InvoiceToken {
             allow.amount - amount,
             allow.expiration_ledger,
         );
-        storage::set_balance(&env, &from, from_balance - amount);
+        storage::set_balance(&env, &from, from_balance - total_debit);
         let to_balance = storage::get_balance(&env, &to)
             .checked_add(amount)
             .ok_or(Error::Overflow)?;
         storage::set_balance(&env, &to, to_balance);
+
+        if fee_amount > 0 {
+            let admin_balance = storage::get_balance(&env, &meta.admin)
+                .checked_add(fee_amount)
+                .ok_or(Error::Overflow)?;
+            storage::set_balance(&env, &meta.admin, admin_balance);
+            events::fee_deducted_event(&env, &from, fee_amount);
+        }
+
+        // Record ownership history for both sender and receiver.
+        let record = OwnershipHistoryRecord {
+            from: from.clone(),
+            to: to.clone(),
+            amount,
+            ledger,
+        };
+        storage::append_token_history(&env, &from, &record);
+        storage::append_token_history(&env, &to, &record);
+        events::history_appended_event(&env, &from, &from, &to, amount);
+
         events::transfer_event(&env, &from, &to, amount);
         Ok(())
     }
@@ -270,6 +447,51 @@ impl InvoiceToken {
         Ok(())
     }
 
+    /// Mint tokens to multiple addresses in a batch. Callable only by admin or minter.
+    /// `to` and `amounts` vectors must be of equal length. Each amount must be > 0.
+    pub fn mint_batch(
+        env: Env,
+        to: Vec<Address>,
+        amounts: Vec<i128>,
+        by: Address,
+    ) -> Result<(), Error> {
+        by.require_auth();
+        if to.len() != amounts.len() {
+            return Err(Error::BatchLengthMismatch);
+        }
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
+        if by != meta.admin && by != meta.minter {
+            return Err(Error::Unauthorized);
+        }
+        // Validate amounts and compute total
+        let mut total_amount: i128 = 0;
+        for amt in amounts.iter() {
+            if amt <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            total_amount = total_amount.checked_add(amt).ok_or(Error::Overflow)?;
+        }
+        // Update total supply once
+        let new_total_supply = storage::get_total_supply(&env)
+            .checked_add(total_amount)
+            .ok_or(Error::Overflow)?;
+        storage::set_total_supply(&env, new_total_supply);
+        // Mint each recipient
+        for i in 0..to.len() {
+            let recipient = to.get(i).unwrap();
+            let amount = amounts.get(i).unwrap();
+            let new_bal = storage::get_balance(&env, &recipient)
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
+            storage::set_balance(&env, &recipient, new_bal);
+            events::mint_event(&env, &recipient, amount);
+        }
+        Ok(())
+    }
+
     /// Set transfer lock. Callable by admin or minter (escrow contract).
     /// When true, only admin can transfer; when false, all holders can transfer.
     pub fn set_transfer_locked(env: Env, caller: Address, locked: bool) -> Result<(), Error> {
@@ -290,9 +512,29 @@ impl InvoiceToken {
         let mut meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let old_minter = meta.minter.clone();
         meta.admin.require_auth();
-        meta.minter = new_minter;
+        meta.minter = new_minter.clone();
         storage::set_metadata(&env, &meta);
+
+        // Update minter role grant: revoke from old, grant to new.
+        let minter_role = Symbol::new(&env, MINTER_ROLE);
+        storage::set_role_grant(&env, &minter_role, &old_minter, false);
+        storage::set_role_grant(&env, &minter_role, &new_minter, true);
+
         events::minter_updated_event(&env, &old_minter, &meta.minter);
+        Ok(())
+    }
+
+    /// Update the fractional precision for this invoice sub-asset. Admin only.
+    pub fn set_decimals(env: Env, decimals: u32) -> Result<(), Error> {
+        let mut meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        meta.admin.require_auth();
+        if decimals > MAX_DECIMALS {
+            return Err(Error::InvalidDecimals);
+        }
+        let old_decimals = meta.decimals;
+        meta.decimals = decimals;
+        storage::set_metadata(&env, &meta);
+        events::decimals_updated_event(&env, old_decimals, decimals);
         Ok(())
     }
 
@@ -323,6 +565,110 @@ impl InvoiceToken {
     pub fn paused(env: Env) -> Result<bool, Error> {
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(meta.paused)
+    }
+
+    // ---------- Issue #113: Fee management ----------
+
+    /// Get current fee in basis points (0 = no fee, 100 = 1%).
+    pub fn get_fee_bps(env: Env) -> Result<i128, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        Ok(storage::get_fee_bps(&env))
+    }
+
+    /// Set fee basis points. Admin only. Valid range: 0..=10_000.
+    pub fn set_fee_bps(env: Env, caller: Address, new_bps: i128) -> Result<(), Error> {
+        caller.require_auth();
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if caller != meta.admin {
+            return Err(Error::Unauthorized);
+        }
+        if !(0..=10_000).contains(&new_bps) {
+            return Err(Error::InvalidFeeBps);
+        }
+        let old_bps = storage::get_fee_bps(&env);
+        storage::set_fee_bps(&env, new_bps);
+        events::fee_updated_event(&env, old_bps, new_bps);
+        Ok(())
+    }
+
+    // ---------- Issue #108: Role-based admin ----------
+
+    /// Get the admin address for a role (who can grant/revoke that role).
+    pub fn get_role_admin(env: Env, role: Symbol) -> Result<Address, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)
+    }
+
+    /// Set the admin for a role. The caller must be the current admin of that role.
+    pub fn set_role_admin(
+        env: Env,
+        caller: Address,
+        role: Symbol,
+        new_admin: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let current_admin = storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)?;
+        if caller != current_admin {
+            return Err(Error::Unauthorized);
+        }
+        let old_admin = current_admin;
+        storage::set_role_admin(&env, &role, &new_admin);
+        events::role_admin_updated_event(&env, &role, &old_admin, &new_admin);
+        Ok(())
+    }
+
+    /// Grant a role to an account. Caller must be the admin of that role.
+    pub fn grant_role(
+        env: Env,
+        caller: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let role_admin = storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)?;
+        if caller != role_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_role_grant(&env, &role, &account, true);
+        events::role_granted_event(&env, &role, &account, true);
+        Ok(())
+    }
+
+    /// Revoke a role from an account. Caller must be the admin of that role.
+    pub fn revoke_role(
+        env: Env,
+        caller: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let role_admin = storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)?;
+        if caller != role_admin {
+            return Err(Error::Unauthorized);
+        }
+        storage::set_role_grant(&env, &role, &account, false);
+        events::role_granted_event(&env, &role, &account, false);
+        Ok(())
+    }
+
+    /// Check whether an account has been granted a role.
+    pub fn has_role(env: Env, role: Symbol, account: Address) -> Result<bool, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        Ok(storage::has_role(&env, &role, &account))
+    }
+
+    // ---------- Issue #111: Ownership history ----------
+
+    /// Get the full ownership history for a given address.
+    pub fn get_token_history(
+        env: Env,
+        account: Address,
+    ) -> Result<soroban_sdk::Vec<OwnershipHistoryRecord>, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        Ok(storage::get_token_history(&env, &account))
     }
 }
 

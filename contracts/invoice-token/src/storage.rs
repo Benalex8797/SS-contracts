@@ -1,8 +1,8 @@
-//! Storage helpers for balances, metadata, and allowances.
+//! Storage helpers for balances, metadata, allowances, fees, roles, nonces, and history.
 
-use soroban_sdk::Address;
+use soroban_sdk::{Address, Symbol, Vec};
 
-use crate::types::{AllowanceData, StorageKey, TokenMetadata};
+use crate::types::{AllowanceData, OwnershipHistoryRecord, StorageKey, TokenMetadata};
 
 /// Load token metadata from instance storage.
 pub fn get_metadata(env: &soroban_sdk::Env) -> Option<TokenMetadata> {
@@ -97,4 +97,116 @@ pub fn get_allowance_data(
     env.storage()
         .persistent()
         .get(&StorageKey::Allowance(from.clone(), spender.clone()))
+}
+
+// ==================== Fee (Issue #113) ====================
+
+/// Get fee basis points from instance storage. Returns 0 if not set.
+pub fn get_fee_bps(env: &soroban_sdk::Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&StorageKey::FeeBps)
+        .unwrap_or(0)
+}
+
+/// Save fee basis points to instance storage.
+pub fn set_fee_bps(env: &soroban_sdk::Env, bps: i128) {
+    env.storage().instance().set(&StorageKey::FeeBps, &bps);
+}
+
+// ==================== Role Admin (Issue #108) ====================
+
+/// Get the admin address for a specific role. Returns None if unset.
+pub fn get_role_admin(env: &soroban_sdk::Env, role: &Symbol) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&StorageKey::RoleAdmin(role.clone()))
+}
+
+/// Set the admin address for a specific role.
+pub fn set_role_admin(env: &soroban_sdk::Env, role: &Symbol, admin: &Address) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::RoleAdmin(role.clone()), admin);
+}
+
+/// Check whether `account` has been granted `role`.
+pub fn has_role(env: &soroban_sdk::Env, role: &Symbol, account: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&StorageKey::RoleGrant(role.clone(), account.clone()))
+        .unwrap_or(false)
+}
+
+/// Grant or revoke `role` for `account`.
+pub fn set_role_grant(env: &soroban_sdk::Env, role: &Symbol, account: &Address, granted: bool) {
+    let key = StorageKey::RoleGrant(role.clone(), account.clone());
+    if granted {
+        env.storage().instance().set(&key, &true);
+    } else {
+        env.storage().instance().remove(&key);
+    }
+}
+
+// ==================== Nonce (Issue #106) ====================
+
+/// Get the current nonce for an address. Starts at 0.
+pub fn get_nonce(env: &soroban_sdk::Env, addr: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::Nonce(addr.clone()))
+        .unwrap_or(0u64)
+}
+
+/// Increment and return the new nonce for an address.
+#[allow(dead_code)]
+pub fn increment_nonce(env: &soroban_sdk::Env, addr: &Address) -> u64 {
+    let current = get_nonce(env, addr);
+    let new_nonce = current + 1;
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Nonce(addr.clone()), &new_nonce);
+    new_nonce
+}
+
+// ==================== Ownership History (Issue #111) ====================
+
+/// Get the full ownership history for an address. Returns empty Vec if none.
+pub fn get_token_history(env: &soroban_sdk::Env, addr: &Address) -> Vec<OwnershipHistoryRecord> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::History(addr.clone()))
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env))
+}
+
+/// Append an ownership history record for an address.
+pub fn append_token_history(
+    env: &soroban_sdk::Env,
+    addr: &Address,
+    record: &OwnershipHistoryRecord,
+) {
+    let key = StorageKey::History(addr.clone());
+    let mut history: Vec<OwnershipHistoryRecord> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    history.push_back(record.clone());
+    env.storage().persistent().set(&key, &history);
+}
+
+// ==================== Allowance Expiration Extension ====================
+
+/// Extend the expiration ledger of an existing allowance in place, leaving its amount untouched.
+pub fn extend_allowance_expiration(
+    env: &soroban_sdk::Env,
+    from: &Address,
+    spender: &Address,
+    new_expiration_ledger: u32,
+) {
+    let key = StorageKey::Allowance(from.clone(), spender.clone());
+    if let Some(mut data) = env.storage().persistent().get::<_, AllowanceData>(&key) {
+        data.expiration_ledger = new_expiration_ledger;
+        env.storage().persistent().set(&key, &data);
+    }
 }

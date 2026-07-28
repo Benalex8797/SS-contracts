@@ -42,4 +42,12 @@ pub enum Error {
     InvalidDueDate = 17,
     /// Asset decimals for payment token and invoice token do not align.
     InvalidAssetDecimals = 18,
+    /// Nonce has already been consumed by a prior signed off-chain approval (replay attempt).
+    NonceAlreadyUsed = 18,
+    /// Escrow is not yet in a terminal state (Settled, Refunded, or Cancelled) and cannot be cleaned up.
+    EscrowNotSettled = 19,
+    /// Buyer is not whitelisted to fund escrows.
+    NotWhitelisted = 20,
+    /// Off-chain signature has expired (timestamp too old).
+    SignatureExpired = 21,
 }
