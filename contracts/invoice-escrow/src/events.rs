@@ -15,7 +15,6 @@ pub fn escrow_status_changed(env: &Env, inv_id: Symbol, status: EscrowStatus, ti
     );
 }
 
-/// Publish escrow_created event.
 pub fn escrow_created(
     env: &Env,
     inv_id: Symbol,
@@ -27,6 +26,7 @@ pub fn escrow_created(
     token: &Address,
     inv_token: &Address,
     commitment: &soroban_sdk::BytesN<32>,
+    funding_milestone: Option<i128>,
 ) {
     env.events().publish(
         (Symbol::new(env, "escrow_created"),),
@@ -40,6 +40,7 @@ pub fn escrow_created(
             token,
             inv_token,
             commitment,
+            funding_milestone,
         ),
     );
 }

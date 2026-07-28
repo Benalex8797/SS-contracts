@@ -102,6 +102,7 @@ impl InvoiceEscrow {
         payment_token: Address,
         invoice_token: Address,
         commitment: soroban_sdk::BytesN<32>,
+        funding_milestone: Option<i128>,
     ) -> Result<(), Error> {
         seller.require_auth();
         if face_value <= 0 || purchase_price <= 0 {
@@ -149,6 +150,7 @@ impl InvoiceEscrow {
             inv_token: invoice_token.clone(),
             paid_amt: 0,
             status: EscrowStatus::Created,
+            funding_milestone,
             commitment: commitment.clone(),
         };
         storage::set_escrow(&env, invoice_id.clone(), &data);
@@ -163,6 +165,7 @@ impl InvoiceEscrow {
             &payment_token,
             &invoice_token,
             &commitment,
+            data.funding_milestone,
         );
         events::escrow_status_changed(&env, invoice_id, EscrowStatus::Created, current_timestamp);
         Ok(())
@@ -271,6 +274,19 @@ impl InvoiceEscrow {
         let new_funded = data.funded_amt.checked_add(amount).ok_or(Error::Overflow)?;
         if new_funded > data.purchase_price {
             return Err(Error::InvalidAmount);
+        }
+
+        // Validate milestone constraints if a milestone is set
+        if let Some(milestone) = data.funding_milestone {
+            let remaining_to_fund = data.purchase_price.checked_sub(data.funded_amt).ok_or(Error::Overflow)?;
+            
+            // Funder is always allowed to just fund exactly the remaining amount to complete the escrow.
+            // If they are not completing the escrow, the amount must be at least the milestone and a multiple of it.
+            if amount != remaining_to_fund {
+                if amount < milestone || amount % milestone != 0 {
+                    return Err(Error::InvalidMilestoneAmount);
+                }
+            }
         }
 
         let token = token::Client::new(env, &data.token);

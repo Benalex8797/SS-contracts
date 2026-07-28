@@ -114,6 +114,7 @@ fn create_and_fund(ctx: &Ctx<'_>, amount: i128, due_date: u64) {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&ctx.env, "commitment"),
+        &None,
     );
     ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer, &amount);
 }
@@ -319,6 +320,7 @@ fn test_integration_cancel_escrow_happy_path() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "cancel_test"),
+        &None,
     );
     assert_eq!(
         ctx.escrow.get_escrow_status(&ctx.invoice_id),
@@ -360,6 +362,7 @@ fn test_integration_cancel_non_seller_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "cancel_non_seller"),
+        &None,
     );
 
     let intruder = Address::generate(&env);
@@ -383,6 +386,7 @@ fn test_integration_fund_cancelled_escrow_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "fund_cancelled"),
+        &None,
     );
     ctx.escrow.cancel_escrow(&ctx.invoice_id, &ctx.seller);
 
@@ -410,6 +414,7 @@ fn test_integration_pause_blocks_fund_and_payment() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "pause_test"),
+        &None,
     );
 
     ctx.escrow.set_paused(&true);
@@ -553,6 +558,7 @@ fn test_integration_over_funding_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "over_fund"),
+        &None,
     );
 
     // Purchase price is 1000; funding 1001 must fail.
@@ -614,6 +620,7 @@ fn test_integration_duplicate_invoice_id_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &commitment,
+        &None,
     );
 
     let result = ctx.escrow.try_create_escrow(
@@ -626,6 +633,7 @@ fn test_integration_duplicate_invoice_id_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &commitment,
+        &None,
     );
     assert_eq!(result, Err(Ok(errors::Error::EscrowExists)));
 }
@@ -652,6 +660,7 @@ fn test_integration_past_due_date_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "past_due"),
+        &None,
     );
     assert_eq!(result, Err(Ok(errors::Error::InvalidDueDate)));
 }
@@ -672,6 +681,7 @@ fn test_integration_zero_due_date_rejected() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "zero_due"),
+        &None,
     );
     assert_eq!(result, Err(Ok(errors::Error::InvalidDueDate)));
 }
@@ -704,6 +714,7 @@ fn test_integration_create_escrow_not_initialized() {
         &token,
         &inv_token,
         &test_commitment(&env, "no_init"),
+        &None,
     );
     assert_eq!(result, Err(Ok(errors::Error::NotInit)));
 }
@@ -729,6 +740,7 @@ fn test_integration_state_persistence_after_create() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &commitment,
+        &None,
     );
 
     let data = ctx.escrow.get_escrow(&ctx.invoice_id);
@@ -886,6 +898,7 @@ fn test_integration_two_independent_escrows() {
         &ctx_a.payment_token.address,
         &inv_token_b_id,
         &test_commitment(&env, "inv_b"),
+        &None,
     );
     ctx_a.escrow.fund_escrow(&inv_b_id, &buyer_b, &500);
 
@@ -934,6 +947,7 @@ fn test_integration_escrow_created_event_emitted() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &commitment,
+        &None,
     );
 
     let evts = env.events().all();
@@ -968,6 +982,7 @@ fn test_integration_escrow_cancelled_event_emitted() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "cancel_event"),
+        &None,
     );
     ctx.escrow.cancel_escrow(&ctx.invoice_id, &ctx.seller);
 
@@ -1044,6 +1059,7 @@ fn test_integration_discounted_purchase_price() {
         &ctx.payment_token.address,
         &ctx.inv_token_id,
         &test_commitment(&env, "discount"),
+        &None,
     );
     ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer, &900);
 
