@@ -29,4 +29,18 @@ pub enum Error {
     InvalidExpiration = 10,
     /// Contract is paused and the requested operation is temporarily disabled.
     Paused = 11,
+    /// Token decimals exceed the supported sub-asset precision.
+    InvalidDecimals = 12,
+    /// Token name or symbol metadata is empty (SEP-41 requires non-empty metadata).
+    InvalidMetadata = 13,
+    /// No allowance exists for (from, spender), so its expiration cannot be extended.
+    AllowanceNotFound = 14,
+    /// Balance is sufficient for the transfer amount but not for the fee.
+    InsufficientBalanceForFee = 15,
+    /// mint_batch vectors have mismatched lengths.
+    BatchLengthMismatch = 16,
+    /// Fee basis points value is out of allowed range (0..=10_000).
+    InvalidFeeBps = 17,
+    /// Role has not been granted to anyone, so there is no role admin.
+    RoleNotGranted = 18,
 }
