@@ -10,7 +10,6 @@ pub use types::DistributionState;
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
 use errors::Error;
-use types::MAX_FEE_BPS;
 
 const ESCROW_STATUS_FUNDED: u32 = 1;
 const ESCROW_STATUS_SETTLED: u32 = 2;

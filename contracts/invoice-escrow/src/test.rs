@@ -1,4 +1,4 @@
-#![allow(deprecated)]
+#![allow(deprecated, unused_variables, dead_code, unused_mut, clippy::all)]
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger};

@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
           components: rustfmt, clippy
 
       - name: Cache Cargo dependencies and build cache
@@ -43,17 +43,17 @@ jobs:
 
       - name: Build WASM contracts in release mode
         run: |
-          cargo build --release --target wasm32-unknown-unknown
+          cargo build --release --target wasm32v1-none
 
       - name: Report WASM artifact sizes
         run: |
           set -euo pipefail
 
           shopt -s nullglob
-          wasm_artifacts=(target/wasm32-unknown-unknown/release/*.wasm)
+          wasm_artifacts=(target/wasm32v1-none/release/*.wasm)
 
           if (( ${#wasm_artifacts[@]} == 0 )); then
-            echo "No WASM artifacts found in target/wasm32-unknown-unknown/release" >&2
+            echo "No WASM artifacts found in target/wasm32v1-none/release" >&2
             exit 1
           fi
 
@@ -69,10 +69,10 @@ jobs:
           set -euo pipefail
 
           shopt -s nullglob
-          wasm_artifacts=(target/wasm32-unknown-unknown/release/*.wasm)
+          wasm_artifacts=(target/wasm32v1-none/release/*.wasm)
 
           if (( ${#wasm_artifacts[@]} == 0 )); then
-            echo "No WASM artifacts found in target/wasm32-unknown-unknown/release" >&2
+            echo "No WASM artifacts found in target/wasm32v1-none/release" >&2
             exit 1
           fi
 

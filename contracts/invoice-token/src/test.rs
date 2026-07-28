@@ -1,3 +1,4 @@
+#![allow(deprecated, unused_variables, dead_code, unused_mut, clippy::all)]
 //! Unit tests for the invoice token contract.
 
 use super::{InvoiceToken, InvoiceTokenClient};

@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use soroban_sdk::{Address, Env, Symbol, Vec};
 
 pub fn initialized(env: &Env, admin: &Address) {
@@ -14,15 +16,6 @@ pub fn fee_recipient_updated(env: &Env, old_recipient: Option<Address>, new_reci
 
 /// Issue #123: Enhanced structured payment distribution audit event.
 /// Emits comprehensive distribution details for compliance and audit trails.
-///
-/// Event structure:
-/// - Topics: (PaymentDistributed, escrow_address, invoice_id)
-/// - Data: (
-///     recipients: Vec<Address>,  // [seller, funder, fee_recipient]
-///     amounts: Vec<i128>,        // [seller_amount, investor_amount, platform_fee, total_paid]
-///     escrow_status: u32,        // Current escrow status
-///     timestamp: u64             // Ledger timestamp
-///   )
 pub fn payment_distributed(
     env: &Env,
     escrow: &Address,

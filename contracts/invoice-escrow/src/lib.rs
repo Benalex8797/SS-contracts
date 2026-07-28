@@ -228,7 +228,7 @@ impl InvoiceEscrow {
         }
         let config = storage::get_config(env).ok_or(Error::NotInit)?;
         ensure_not_paused(&config)?;
-        if config.whitelist_enabled && !storage::is_whitelisted(&env, &buyer) {
+        if config.whitelist_enabled && !storage::is_whitelisted(env, buyer) {
             return Err(Error::NotWhitelisted);
         }
 
@@ -287,7 +287,7 @@ impl InvoiceEscrow {
         );
         if data.status == EscrowStatus::Funded {
             events::escrow_status_changed(
-                &env,
+                env,
                 invoice_id,
                 EscrowStatus::Funded,
                 env.ledger().timestamp(),

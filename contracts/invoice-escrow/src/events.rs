@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Event definitions for state changes (escrow_created, escrow_funded, payment_settled).
 
 use soroban_sdk::{Address, Env, Symbol};
