@@ -70,3 +70,41 @@ pub fn approval_revoked_event(env: &Env, from: &Address, spender: &Address) {
     env.events()
         .publish((Symbol::new(env, "approval_revoked"), from, spender), ());
 }
+
+/// Emit nonce queried event.
+pub fn nonce_queried_event(env: &Env, account: &Address, nonce: u64) {
+    env.events().publish((Symbol::new(env, "nonce_queried"),), (account, nonce));
+}
+
+/// Emit fee deducted event.
+pub fn fee_deducted_event(env: &Env, from: &Address, fee_amount: i128) {
+    env.events().publish((Symbol::new(env, "fee_deducted"),), (from, fee_amount));
+}
+
+/// Emit history appended event.
+pub fn history_appended_event(env: &Env, from: &Address, from_clone: &Address, to: &Address, amount: i128) {
+    env.events().publish((Symbol::new(env, "history_appended"),), (from, from_clone, to, amount));
+}
+
+// ----- Additional event helpers -----
+
+/// Emit fee updated event (old and new basis points).
+pub fn fee_updated_event(env: &Env, old_bps: i128, new_bps: i128) {
+    env.events().publish((Symbol::new(env, "fee_updated"),), (old_bps, new_bps));
+}
+
+/// Emit role admin updated event (role, old admin, new admin).
+pub fn role_admin_updated_event(env: &Env, role: &Symbol, old_admin: &Address, new_admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "role_admin_updated"), role),
+        (old_admin, new_admin),
+    );
+}
+
+/// Emit role granted/revoked event (role, account, granted flag).
+pub fn role_granted_event(env: &Env, role: &Symbol, account: &Address, granted: bool) {
+    env.events().publish(
+        (Symbol::new(env, "role_granted"), role, account),
+        granted,
+    );
+}

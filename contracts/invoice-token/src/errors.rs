@@ -13,22 +13,27 @@ pub enum Error {
     NotInit = 2,
     /// Caller is not authorized (e.g. not admin or minter).
     Unauthorized = 3,
+    RoleNotGranted = 4,
     /// Amount is zero or negative.
-    InvalidAmount = 4,
+    InvalidAmount = 5,
     /// Insufficient balance for transfer or burn.
-    InsufficientBalance = 5,
+    InsufficientBalance = 6,
+    InsufficientBalanceForFee = 7,
     /// Insufficient allowance for transfer_from or burn_from.
-    InsufficientAllowance = 6,
+    InsufficientAllowance = 8,
     /// Allowance has expired (expiration_ledger passed).
-    AllowanceExpired = 7,
+    AllowanceExpired = 9,
     /// Transfers are locked (pre-settlement restriction).
-    TransferLocked = 8,
+    TransferLocked = 10,
     /// Arithmetic overflow.
-    Overflow = 9,
+    Overflow = 11,
     /// Approval expiration_ledger must be >= current ledger unless setting amount to 0.
-    InvalidExpiration = 10,
+    InvalidExpiration = 12,
     /// Contract is paused and the requested operation is temporarily disabled.
-    Paused = 11,
+    Paused = 13,
     /// Token decimals exceed the supported sub-asset precision.
-    InvalidDecimals = 12,
+    InvalidFeeBps = 14,
+    InvalidDecimals = 15,
+    /// Batch length mismatch.
+    BatchLengthMismatch = 16,
 }

@@ -10,11 +10,13 @@ mod errors;
 mod events;
 mod storage;
 mod types;
+mod constants;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
+use crate::constants::*;
 
 use crate::errors::Error;
-use crate::types::{TokenMetadata, MAX_DECIMALS};
+use crate::types::{TokenMetadata, MAX_DECIMALS, OwnershipHistoryRecord};
 
 #[contract]
 pub struct InvoiceToken;
@@ -419,27 +421,24 @@ impl InvoiceToken {
         }
         // Validate amounts and compute total
         let mut total_amount: i128 = 0;
-        for amt in amounts.iter() {
-            if *amt <= 0 {
+        for i in 0..amounts.len() {
+            let amount = amounts.get(i).unwrap();
+            if amount <= 0 {
                 return Err(Error::InvalidAmount);
             }
-            total_amount = total_amount.checked_add(*amt).ok_or(Error::Overflow)?;
+            total_amount = total_amount.checked_add(amount).ok_or(Error::Overflow)?;
+            let recipient = to.get(i).unwrap();
+            let new_bal = storage::get_balance(&env, &recipient)
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
+            storage::set_balance(&env, &recipient, new_bal);
+            events::mint_event(&env, &recipient, amount);
         }
         // Update total supply once
         let new_total_supply = storage::get_total_supply(&env)
             .checked_add(total_amount)
             .ok_or(Error::Overflow)?;
         storage::set_total_supply(&env, new_total_supply);
-        // Mint each recipient
-        for i in 0..to.len() {
-            let recipient = to.get(i).unwrap();
-            let amount = amounts.get(i).unwrap();
-            let new_bal = storage::get_balance(&env, recipient)
-                .checked_add(*amount)
-                .ok_or(Error::Overflow)?;
-            storage::set_balance(&env, recipient, new_bal);
-            events::mint_event(&env, recipient, *amount);
-        }
         Ok(())
     }
 
