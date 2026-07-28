@@ -2,8 +2,8 @@
 
 use super::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::{Address, Env, Symbol, Vec, Val, String as SorobanString, IntoVal, TryIntoVal, event::ContractEvent};
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::events::Events;
+use soroban_sdk::testutils::{Address as _, Ledger, Events};
+
 fn setup_token(env: &Env) -> (InvoiceTokenClient<'_>, Address, Address) {
     let contract_id = env.register(InvoiceToken, ());
     let client = InvoiceTokenClient::new(env, &contract_id);

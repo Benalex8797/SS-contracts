@@ -479,7 +479,7 @@ fn test_escrow_created_event() {
 
     // Assert escrow_created event was emitted
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     // Event tuple is (contract_address, topics, data)
     let (_contract_addr, topics, data) = event;
@@ -552,7 +552,7 @@ fn test_escrow_funded_event() {
 
     // Find escrow_funded event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -608,7 +608,7 @@ fn test_payment_settled_event() {
 
     // Find payment_settled event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -669,7 +669,7 @@ fn test_escrow_refunded_event() {
 
     // Find escrow_refunded event (should be the last event)
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
@@ -1751,7 +1751,7 @@ fn test_update_platform_fee() {
 
     // The update should emit a platform_fee_updated event with old/new values.
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
     let (_contract_addr, topics, data) = event;
     assert_eq!(
         topics,
@@ -2436,7 +2436,7 @@ fn test_commitment_included_in_created_event() {
 
     // Assert escrow_created event was emitted with commitment
     let events = env.events().all();
-    let event = events.last().unwrap();
+    let event = events.events().last().unwrap();
 
     let (_contract_addr, topics, data) = event;
 
