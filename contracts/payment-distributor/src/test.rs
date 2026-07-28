@@ -1225,3 +1225,54 @@ fn test_calculate_distribution_splits_rejects_nothing_to_distribute() {
 
     assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #119: Implement Dust Amount Collector and Sweep Function
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_sweep_dust_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let fee_recipient = Address::generate(&env);
+    distributor.set_fee_recipient(&admin, &fee_recipient);
+
+    asset.mint(&distributor_id, &100);
+
+    let result = distributor.try_sweep_dust(&admin, &token.address);
+    assert!(result.is_ok());
+
+    assert_eq!(token.balance(&fee_recipient), 100);
+    assert_eq!(token.balance(&distributor_id), 0);
+}
+
+#[test]
+fn test_sweep_dust_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    asset.mint(&distributor_id, &100);
+
+    let fake_admin = Address::generate(&env);
+    let result = distributor.try_sweep_dust(&fake_admin, &token.address);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_sweep_dust_nothing_to_sweep() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let (token, _asset) = make_token(&env);
+
+    let result = distributor.try_sweep_dust(&admin, &token.address);
+    assert_eq!(result, Err(Ok(Error::NothingToSweep)));
+}

@@ -31,4 +31,6 @@ pub enum Error {
     NothingToWithdraw = 17,
     /// The calling escrow contract does not match the whitelisted escrow address. Issue #131.
     UnauthorizedEscrow = 18,
+    /// The contract holds no dust balance to sweep. Issue #119.
+    NothingToSweep = 19,
 }

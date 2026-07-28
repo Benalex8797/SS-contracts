@@ -113,3 +113,17 @@ pub fn emergency_withdrawal(
     env.events()
         .publish(topics, (admin.clone(), to.clone(), amount));
 }
+
+/// Issue #119: Dust amount swept event.
+/// Topics: (DustSwept, token); Data: (admin, to, amount).
+pub fn dust_swept(
+    env: &Env,
+    admin: &Address,
+    token: &Address,
+    to: &Address,
+    amount: i128,
+) {
+    let topics = (Symbol::new(env, "DustSwept"), token.clone());
+    env.events()
+        .publish(topics, (admin.clone(), to.clone(), amount));
+}

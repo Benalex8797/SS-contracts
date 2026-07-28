@@ -421,6 +421,37 @@ impl PaymentDistributor {
         Ok(())
     }
 
+    /// Issue #119: Implement Dust Amount Collector and Sweep Function.
+    ///
+    /// Admin-only function to sweep leftover token balances to the configured
+    /// fee recipient (or admin if not set).
+    pub fn sweep_dust(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), Error> {
+        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+
+        let token_client = token::Client::new(&env, &token);
+        let contract_addr = env.current_contract_address();
+        let balance = token_client.balance(&contract_addr);
+        if balance <= 0 {
+            return Err(Error::NothingToSweep);
+        }
+
+        let fee_recipient = storage::get_fee_recipient(&env)
+            .unwrap_or_else(|| stored_admin.clone());
+
+        token_client.transfer(&contract_addr, &fee_recipient, &balance);
+        events::dust_swept(&env, &admin, &token, &fee_recipient, balance);
+        Ok(())
+    }
+
+
     /// View: return the current admin.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)
