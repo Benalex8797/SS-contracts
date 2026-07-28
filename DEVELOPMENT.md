@@ -44,7 +44,7 @@ Run `cargo install cargo-audit --locked` once locally if the `cargo audit` comma
 
 ### 1. Requirements
 - Rust stable toolchain (`1.80+`) with target `wasm32-unknown-unknown`
-- Soroban CLI (`soroban-cli` 22.0.0+)
+- Stellar CLI / Soroban CLI (`stellar-cli` / `soroban-cli` pinned to `22.0.0`)
 - `cargo-tarpaulin` (optional, for code coverage reports)
 
 ### 2. Standard Commands
