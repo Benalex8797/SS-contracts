@@ -1,7 +1,7 @@
 //! Invoice Token (SEP-41) contract for StellarSettle.
 //!
 //! Implements a fungible token representing fractional ownership of an invoice,
-//! with mint (admin/escrow), burn, allowances, optional transfer lock,
+//! with minting, burning, allowances, optional transfer lock,
 //! fee deduction, role-based admin, nonce tracking, and ownership history.
 
 #![no_std]
