@@ -11,8 +11,7 @@ use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, BytesN, Env, FromVal, IntoVal, String as SorobanString, Symbol, TryFromVal,
-    TryIntoVal, Val, Vec,
+    Address, BytesN, Env, String as SorobanString, Symbol, TryFromVal, TryIntoVal, Val, Vec,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
