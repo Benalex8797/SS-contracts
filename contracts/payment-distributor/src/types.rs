@@ -11,8 +11,7 @@ pub enum StorageKey {
     FeeRecipient,
     /// Re-entrancy guard flag for distribution entrypoints (Issue #127).
     Locked,
-    /// Whitelisted escrow contract address authorized to invoke distribution
-    /// entrypoints (Issue #121 / #131).
+    /// Whitelisted escrow contract address allowed to call distribute_payment (Issue #121).
     EscrowContract,
     /// Role admin for a given role (Issue #182).
     RoleAdmin(soroban_sdk::Symbol),
@@ -94,13 +93,13 @@ pub struct AssetRoute {
     pub split: DistributionSplit,
 }
 
-/// Dry-run result of a `distribute_payment` fee/split calculation, computed
-/// without touching storage or moving funds (Issue #129).
+/// Dry-run preview of a `distribute_payment` split, with no state mutation or
+/// token transfers. Issue #129.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DistributionQuote {
+pub struct DistributionPreview {
     pub seller_amount: i128,
     pub investor_amount: i128,
     pub platform_fee: i128,
-    pub payment_amount: i128,
+    pub total_distribution: i128,
 }

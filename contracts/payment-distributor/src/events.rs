@@ -12,6 +12,13 @@ pub fn fee_recipient_updated(env: &Env, old_recipient: Option<Address>, new_reci
         .publish(topics, (old_recipient, new_recipient.clone()));
 }
 
+/// Issue #121: Escrow contract binding updated event.
+pub fn escrow_contract_updated(env: &Env, old_escrow: Option<Address>, new_escrow: &Address) {
+    let topics = (Symbol::new(env, "escrow_contract_updated"),);
+    env.events()
+        .publish(topics, (old_escrow, new_escrow.clone()));
+}
+
 /// Issue #123: Enhanced structured payment distribution audit event.
 /// Emits comprehensive distribution details for compliance and audit trails.
 ///

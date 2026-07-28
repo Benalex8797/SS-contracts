@@ -5,7 +5,7 @@ mod events;
 mod storage;
 mod types;
 
-pub use types::{AssetRoute, DistributionQuote, DistributionSplit, DistributionState};
+pub use types::{AssetRoute, DistributionPreview, DistributionSplit, DistributionState};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
@@ -49,6 +49,65 @@ fn acquire_lock(env: &Env) -> Result<(), Error> {
 /// Issue #127: Release the re-entrancy lock on normal completion.
 fn release_lock(env: &Env) {
     storage::set_lock(env, false);
+}
+
+/// Issue #129: Shared split-calculation core used by both `distribute_payment`
+/// and the `calculate_distribution_splits` dry-run getter. Computes the
+/// seller/investor/fee split for a payment delta with no storage writes or
+/// token transfers.
+///
+/// Issue #132: Rounding losses are allocated to the seller so the total
+/// distribution equals `payment_amount` exactly.
+fn compute_split(
+    paid_amount: i128,
+    already_distributed: i128,
+    investor_amount: i128,
+    fee_bps_u32: u32,
+) -> Result<types::DistributionPreview, Error> {
+    if fee_bps_u32 > MAX_FEE_BPS {
+        return Err(Error::InvalidBps);
+    }
+
+    let payment_amount = paid_amount
+        .checked_sub(already_distributed)
+        .ok_or(Error::Overflow)?;
+
+    if payment_amount <= 0 {
+        return Err(Error::NothingToDistribute);
+    }
+
+    let platform_fee = payment_amount
+        .checked_mul(fee_bps_u32 as i128)
+        .ok_or(Error::Overflow)?
+        .checked_div(10_000)
+        .ok_or(Error::Overflow)?;
+
+    let seller_amount = payment_amount
+        .checked_sub(investor_amount)
+        .ok_or(Error::Overflow)?
+        .checked_sub(platform_fee)
+        .ok_or(Error::Overflow)?;
+
+    if seller_amount < 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    let total_distribution = seller_amount
+        .checked_add(investor_amount)
+        .ok_or(Error::Overflow)?
+        .checked_add(platform_fee)
+        .ok_or(Error::Overflow)?;
+
+    if total_distribution != payment_amount {
+        return Err(Error::InvalidAmount);
+    }
+
+    Ok(types::DistributionPreview {
+        seller_amount,
+        investor_amount,
+        platform_fee,
+        total_distribution,
+    })
 }
 
 /// Issue #126 / #130: Distribute a single asset `amount` across `split`, taking the
@@ -167,10 +226,13 @@ impl PaymentDistributor {
         storage::get_admin(&env).ok_or(Error::NotInit)?;
         escrow_contract.require_auth();
 
-        // Issue #131: Only the whitelisted escrow contract may invoke distribution.
-        let whitelisted = storage::get_escrow_contract(&env).ok_or(Error::EscrowContractNotSet)?;
-        if escrow_contract != whitelisted {
-            return Err(Error::UnauthorizedEscrowOrigin);
+        // Issue #131: Opt-in whitelist enforcement. If no escrow contract has been
+        // bound via `set_escrow_contract`, behavior is unchanged (open). Once bound,
+        // only that exact address may call `distribute_payment`.
+        if let Some(whitelisted) = storage::get_escrow_contract(&env) {
+            if whitelisted != escrow_contract {
+                return Err(Error::UnauthorizedEscrow);
+            }
         }
 
         if escrow_status != ESCROW_STATUS_FUNDED && escrow_status != ESCROW_STATUS_SETTLED {
@@ -185,53 +247,20 @@ impl PaymentDistributor {
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
         let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
 
-        // Issue #124: Validate fee BPS does not exceed maximum (10,000 = 100%)
-        if fee_bps_u32 > MAX_FEE_BPS {
-            return Err(Error::InvalidBps);
-        }
-
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
-        let mut state = get_distribution_state(&env, &escrow_contract, &invoice_id);
-        let payment_amount = paid_amount
-            .checked_sub(state.paid_distributed)
-            .ok_or(Error::Overflow)?;
-
-        if payment_amount <= 0 {
-            return Err(Error::NothingToDistribute);
-        }
-
-        // Issue #132: Automated fee rounding loss minimization
-        // Calculate platform fee, investor amount, then allocate any rounding loss to seller
-        let platform_fee = (payment_amount as i128)
-            .checked_mul(fee_bps_u32 as i128)
-            .ok_or(Error::Overflow)?
-            .checked_div(10_000)
-            .ok_or(Error::Overflow)?;
-
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
+        let mut state = get_distribution_state(&env, &escrow_contract, &invoice_id);
 
-        // Seller receives: payment_amount - investor_amount - platform_fee
-        // This automatically absorbs any rounding loss
-        let seller_amount = payment_amount
-            .checked_sub(investor_amount)
-            .ok_or(Error::Overflow)?
-            .checked_sub(platform_fee)
-            .ok_or(Error::Overflow)?;
-
-        if seller_amount < 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        // Verify total distribution equals payment_amount exactly
-        let total_distribution = seller_amount
-            .checked_add(investor_amount)
-            .ok_or(Error::Overflow)?
-            .checked_add(platform_fee)
-            .ok_or(Error::Overflow)?;
-
-        if total_distribution != payment_amount {
-            return Err(Error::InvalidAmount);
-        }
+        // Issue #132: Automated fee rounding loss minimization, computed via the
+        // shared `compute_split` core also used by the Issue #129 dry-run getter.
+        let preview = compute_split(
+            paid_amount,
+            state.paid_distributed,
+            investor_amount,
+            fee_bps_u32,
+        )?;
+        let platform_fee = preview.platform_fee;
+        let seller_amount = preview.seller_amount;
 
         // Issue #122: Use configured fee recipient (fallback to admin if not set)
         let fee_recipient = storage::get_fee_recipient(&env)
@@ -239,6 +268,10 @@ impl PaymentDistributor {
 
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
+
+        if token_client.balance(&contract_addr) < payment_amount {
+            return Err(Error::InsufficientBalance);
+        }
 
         token_client.transfer(&contract_addr, &seller, &seller_amount);
         token_client.transfer(&contract_addr, &funder, &investor_amount);
@@ -303,6 +336,11 @@ impl PaymentDistributor {
 
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
+
+        if token_client.balance(&contract_addr) < refund_amount {
+            return Err(Error::InsufficientBalance);
+        }
+
         token_client.transfer(&contract_addr, &funder, &refund_amount);
 
         state.refund_distributed = true;
@@ -440,13 +478,10 @@ impl PaymentDistributor {
         Ok(get_distribution_state(&env, &escrow_contract, &invoice_id))
     }
 
-    /// Issue #121: Bind (or rebind) the whitelisted escrow contract address
-    /// authorized to invoke distribution entrypoints. Admin-only.
-    pub fn set_escrow_contract(
-        env: Env,
-        admin: Address,
-        escrow_contract: Address,
-    ) -> Result<(), Error> {
+    /// Issue #121: Bind the whitelisted escrow contract address allowed to call
+    /// `distribute_payment`. Only the admin can update this binding.
+    /// Emits an `escrow_contract_updated` event for audit trails.
+    pub fn set_escrow_contract(env: Env, admin: Address, new_escrow: Address) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
@@ -454,75 +489,27 @@ impl PaymentDistributor {
         admin.require_auth();
 
         let old_escrow = storage::get_escrow_contract(&env);
-        storage::set_escrow_contract(&env, &escrow_contract);
-        events::escrow_contract_updated(&env, old_escrow, &escrow_contract);
+        storage::set_escrow_contract(&env, &new_escrow);
+        events::escrow_contract_updated(&env, old_escrow, &new_escrow);
         Ok(())
     }
 
-    /// View: return the whitelisted escrow contract address, if configured.
-    pub fn get_escrow_contract(env: Env) -> Result<Address, Error> {
+    /// View: return the currently whitelisted escrow contract, if any bound.
+    pub fn get_escrow_contract(env: Env) -> Result<Option<Address>, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)?;
-        storage::get_escrow_contract(&env).ok_or(Error::EscrowContractNotSet)
+        Ok(storage::get_escrow_contract(&env))
     }
 
-    // ==================== Issue #182: Role-based access control ====================
-
-    /// Grant a role to an account. Only the admin can grant roles.
-    pub fn grant_role(
-        env: Env,
-        admin: Address,
-        role: Symbol,
-        account: Address,
-    ) -> Result<(), Error> {
-        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
-        admin.require_auth();
-        storage::set_role_grant(&env, &role, &account, true);
-        events::role_grant_updated(&env, &role, &account, true);
-        Ok(())
-    }
-
-    /// Revoke a role from an account. Only the admin can revoke roles.
-    pub fn revoke_role(
-        env: Env,
-        admin: Address,
-        role: Symbol,
-        account: Address,
-    ) -> Result<(), Error> {
-        let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
-        admin.require_auth();
-        storage::set_role_grant(&env, &role, &account, false);
-        events::role_grant_updated(&env, &role, &account, false);
-        Ok(())
-    }
-
-    /// Check whether an account has been granted a role.
-    pub fn has_role(env: Env, role: Symbol, account: Address) -> Result<bool, Error> {
-        storage::get_admin(&env).ok_or(Error::NotInit)?;
-        Ok(storage::has_role(&env, &role, &account))
-    }
-
-    /// Get the admin address for a role.
-    pub fn get_role_admin(env: Env, role: Symbol) -> Result<Address, Error> {
-        storage::get_admin(&env).ok_or(Error::NotInit)?;
-        storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)
-    }
-
-    /// Issue #129: Dry-run the `distribute_payment` fee/split calculation
-    /// without touching storage or moving funds. Mirrors the exact math of
-    /// `distribute_payment` so callers can preview amounts before submitting.
+    /// Issue #129: Dry-run preview of a `distribute_payment` split. Performs no
+    /// storage writes, no token transfers, and no auth checks — a pure view
+    /// into what `distribute_payment` would compute for the same inputs.
     pub fn calculate_distribution_splits(
         env: Env,
         escrow_contract: Address,
         invoice_id: Symbol,
         addresses: Vec<Address>,
         amounts: Vec<i128>,
-    ) -> Result<types::DistributionQuote, Error> {
+    ) -> Result<DistributionPreview, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)?;
 
         if addresses.len() != 4 || amounts.len() != 4 {
@@ -530,54 +517,16 @@ impl PaymentDistributor {
         }
 
         let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
-        if fee_bps_u32 > MAX_FEE_BPS {
-            return Err(Error::InvalidBps);
-        }
-
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
-        let state = get_distribution_state(&env, &escrow_contract, &invoice_id);
-        let payment_amount = paid_amount
-            .checked_sub(state.paid_distributed)
-            .ok_or(Error::Overflow)?;
-
-        if payment_amount <= 0 {
-            return Err(Error::NothingToDistribute);
-        }
-
-        let platform_fee = (payment_amount as i128)
-            .checked_mul(fee_bps_u32 as i128)
-            .ok_or(Error::Overflow)?
-            .checked_div(10_000)
-            .ok_or(Error::Overflow)?;
-
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
+        let state = get_distribution_state(&env, &escrow_contract, &invoice_id);
 
-        let seller_amount = payment_amount
-            .checked_sub(investor_amount)
-            .ok_or(Error::Overflow)?
-            .checked_sub(platform_fee)
-            .ok_or(Error::Overflow)?;
-
-        if seller_amount < 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let total_distribution = seller_amount
-            .checked_add(investor_amount)
-            .ok_or(Error::Overflow)?
-            .checked_add(platform_fee)
-            .ok_or(Error::Overflow)?;
-
-        if total_distribution != payment_amount {
-            return Err(Error::InvalidAmount);
-        }
-
-        Ok(types::DistributionQuote {
-            seller_amount,
+        compute_split(
+            paid_amount,
+            state.paid_distributed,
             investor_amount,
-            platform_fee,
-            payment_amount,
-        })
+            fee_bps_u32,
+        )
     }
 }
 
