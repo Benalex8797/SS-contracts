@@ -4,7 +4,9 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as AssetClient;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, Symbol, TryIntoVal};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val, Vec,
+};
 
 /// Helper function to create a test commitment hash (SHA-256 format)
 fn test_commitment(env: &Env, data: &str) -> BytesN<32> {
@@ -13,6 +15,25 @@ fn test_commitment(env: &Env, data: &str) -> BytesN<32> {
     let len = bytes.len().min(32);
     array[..len].copy_from_slice(&bytes[..len]);
     BytesN::from_array(env, &array)
+}
+
+fn parse_event(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> (Address, Vec<Val>, Val) {
+    let contract_addr = match &event.contract_id {
+        Some(hash) => Address::try_from_val(
+            env,
+            &soroban_sdk::xdr::ScVal::Address(soroban_sdk::xdr::ScAddress::Contract(hash.clone())),
+        )
+        .unwrap(),
+        None => Address::generate(env),
+    };
+    let soroban_sdk::xdr::ContractEventBody::V0(v0) = &event.body;
+    let topics = Vec::<Val>::try_from_val(
+        env,
+        &soroban_sdk::xdr::ScVal::Vec(Some(v0.topics.clone().into())),
+    )
+    .unwrap();
+    let data = Val::try_from_val(env, &v0.data).unwrap();
+    (contract_addr, topics, data)
 }
 
 #[contract]
@@ -84,7 +105,9 @@ impl MockTokenEnvironment {
 
         let mut env_self = MockTokenEnvironment {
             escrow_id,
-            escrow_client: unsafe { core::mem::transmute::<_, InvoiceEscrowClient<'static>>(escrow_client) },
+            escrow_client: unsafe {
+                core::mem::transmute::<_, InvoiceEscrowClient<'static>>(escrow_client)
+            },
             admin,
             seller,
             buyer,
@@ -95,8 +118,14 @@ impl MockTokenEnvironment {
         };
 
         // Mint tokens to buyer and payer
-        env_self.payment_token.asset.mint(&env_self.buyer, &purchase_price);
-        env_self.payment_token.asset.mint(&env_self.payer, &face_value);
+        env_self
+            .payment_token
+            .asset
+            .mint(&env_self.buyer, &purchase_price);
+        env_self
+            .payment_token
+            .asset
+            .mint(&env_self.payer, &face_value);
 
         env_self.escrow_client.create_escrow(
             &env_self.invoice_id,
@@ -114,11 +143,13 @@ impl MockTokenEnvironment {
     }
 
     fn fund(&self, amount: i128) {
-        self.escrow_client.fund_escrow(&self.invoice_id, &self.buyer, &amount);
+        self.escrow_client
+            .fund_escrow(&self.invoice_id, &self.buyer, &amount);
     }
 
     fn record_payment(&self, amount: i128) {
-        self.escrow_client.record_payment(&self.invoice_id, &self.payer, &amount);
+        self.escrow_client
+            .record_payment(&self.invoice_id, &self.payer, &amount);
     }
 }
 
@@ -128,8 +159,12 @@ impl MockTokenEnvironment {
 fn register_second_token(env: &Env) -> (Address, TokenClient<'static>, AssetClient<'static>) {
     let token_admin = Address::generate(env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let client = unsafe { core::mem::transmute::<_, TokenClient<'static>>(TokenClient::new(env, &token_id.address())) };
-    let asset = unsafe { core::mem::transmute::<_, AssetClient<'static>>(AssetClient::new(env, &token_id.address())) };
+    let client = unsafe {
+        core::mem::transmute::<_, TokenClient<'static>>(TokenClient::new(env, &token_id.address()))
+    };
+    let asset = unsafe {
+        core::mem::transmute::<_, AssetClient<'static>>(AssetClient::new(env, &token_id.address()))
+    };
     (token_id.address(), client, asset)
 }
 
@@ -197,10 +232,15 @@ fn test_multi_asset_helper_create_and_fund() {
     test_env.fund(1000);
 
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Funded
     );
-    assert_eq!(test_env.payment_token.client.balance(&test_env.escrow_id), 1000);
+    assert_eq!(
+        test_env.payment_token.client.balance(&test_env.escrow_id),
+        1000
+    );
 }
 
 #[test]
@@ -211,7 +251,9 @@ fn test_multi_asset_helper_settle() {
     test_env.record_payment(1000);
 
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Settled
     );
     // Verify fee distribution: 3% of 1000 = 30 to admin, 970 to buyer
@@ -230,7 +272,9 @@ fn test_multi_asset_helper_partial_payment() {
 
     // Status should still be Funded
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Funded
     );
 
@@ -238,7 +282,9 @@ fn test_multi_asset_helper_partial_payment() {
     test_env.record_payment(600);
 
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Settled
     );
     assert_eq!(test_env.payment_token.client.balance(&test_env.buyer), 970);
@@ -479,10 +525,21 @@ fn test_escrow_created_event() {
 
     // Assert escrow_created event was emitted
     let events = env.events().all();
-    let event = events.events().last().unwrap();
-
-    // Event tuple is (contract_address, topics, data)
-    let (_contract_addr, topics, data) = event;
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_created")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_created event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -552,9 +609,21 @@ fn test_escrow_funded_event() {
 
     // Find escrow_funded event (should be the last event)
     let events = env.events().all();
-    let event = events.events().last().unwrap();
-
-    let (_contract_addr, topics, data) = event;
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_funded")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_funded event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(topics, (Symbol::new(&env, "escrow_funded"),).into_val(&env));
 
@@ -608,9 +677,21 @@ fn test_payment_settled_event() {
 
     // Find payment_settled event (should be the last event)
     let events = env.events().all();
-    let event = events.events().last().unwrap();
-
-    let (_contract_addr, topics, data) = event;
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "payment_settled")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected payment_settled event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -669,9 +750,21 @@ fn test_escrow_refunded_event() {
 
     // Find escrow_refunded event (should be the last event)
     let events = env.events().all();
-    let event = events.events().last().unwrap();
-
-    let (_contract_addr, topics, data) = event;
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_refunded")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_refunded event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -726,8 +819,8 @@ fn test_no_settlement_event_on_invalid_state() {
 
     // Verify no payment_settled event was emitted by checking all events
     let all_events = env.events().all();
-    for event in all_events.iter() {
-        let (_addr, topics, _data) = event;
+    for event in all_events.events().iter() {
+        let (_addr, topics, _data) = parse_event(&env, event);
         // Check if this is a payment_settled event
         let topic_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
         if !topic_vec.is_empty() {
@@ -783,8 +876,8 @@ fn test_no_refund_event_on_invalid_state() {
 
     // Verify no escrow_refunded event was emitted by checking all events
     let all_events = env.events().all();
-    for event in all_events.iter() {
-        let (_addr, topics, _data) = event;
+    for event in all_events.events().iter() {
+        let (_addr, topics, _data) = parse_event(&env, event);
         // Check if this is an escrow_refunded event
         let topic_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
         if !topic_vec.is_empty() {
@@ -958,8 +1051,8 @@ fn test_create_escrow_zero_face_value_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &0,       // face_value = 0
-        &500,     // purchase_price valid
+        &0,   // face_value = 0
+        &500, // purchase_price valid
         &1000000,
         &payment_token,
         &inv_token,
@@ -988,8 +1081,8 @@ fn test_create_escrow_zero_purchase_price_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &1000,    // face_value valid
-        &0,       // purchase_price = 0
+        &1000, // face_value valid
+        &0,    // purchase_price = 0
         &1000000,
         &payment_token,
         &inv_token,
@@ -1018,8 +1111,8 @@ fn test_create_escrow_negative_face_value_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &-100,    // face_value negative
-        &500,     // purchase_price valid
+        &-100, // face_value negative
+        &500,  // purchase_price valid
         &1000000,
         &payment_token,
         &inv_token,
@@ -1048,8 +1141,8 @@ fn test_create_escrow_negative_purchase_price_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &1000,    // face_value valid
-        &-100,    // purchase_price negative
+        &1000, // face_value valid
+        &-100, // purchase_price negative
         &1000000,
         &payment_token,
         &inv_token,
@@ -1752,7 +1845,7 @@ fn test_update_platform_fee() {
     // The update should emit a platform_fee_updated event with old/new values.
     let events = env.events().all();
     let event = events.events().last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let (_contract_addr, topics, data) = parse_event(&env, event);
     assert_eq!(
         topics,
         (Symbol::new(&env, "platform_fee_updated"),).into_val(&env)
@@ -2145,8 +2238,22 @@ fn test_cancel_escrow_emits_event() {
     client.cancel_escrow(&invoice_id, &seller);
 
     let events = env.events().all();
-    let last = events.last().expect("expected event");
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
+    let last = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_cancelled")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_cancelled event");
+    let (_addr, topics, _data) = parse_event(&env, last);
+    let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, Symbol::new(&env, "escrow_cancelled"));
 }
 
@@ -2436,9 +2543,21 @@ fn test_commitment_included_in_created_event() {
 
     // Assert escrow_created event was emitted with commitment
     let events = env.events().all();
-    let event = events.events().last().unwrap();
-
-    let (_contract_addr, topics, data) = event;
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_created")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_created event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -2744,8 +2863,15 @@ fn test_refund_long_overdue() {
     payment_token_asset.mint(&buyer, &1000);
 
     escrow_client.create_escrow(
-        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
-        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "long_overdue"),
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "long_overdue"),
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -2785,8 +2911,15 @@ fn test_refund_immediately_at_due_date() {
     payment_token_asset.mint(&buyer, &1000);
 
     escrow_client.create_escrow(
-        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
-        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "immediate_refund"),
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "immediate_refund"),
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -2824,8 +2957,15 @@ fn test_refund_one_second_after_due_date() {
     payment_token_asset.mint(&buyer, &1000);
 
     escrow_client.create_escrow(
-        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
-        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "one_sec_refund"),
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "one_sec_refund"),
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -2862,8 +3002,15 @@ fn test_refund_one_second_before_due_date() {
     payment_token_asset.mint(&buyer, &1000);
 
     escrow_client.create_escrow(
-        &invoice_id, &seller, &seller, &1000, &1000, &due_date,
-        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "before_refund"),
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "before_refund"),
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -2905,8 +3052,15 @@ fn test_refund_with_partial_payment_long_overdue() {
     payment_token_asset.mint(&payer, &1000);
 
     escrow_client.create_escrow(
-        &invoice_id, &seller, &payer, &1000, &1000, &due_date,
-        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "partial_long"),
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &due_date,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "partial_long"),
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -2952,8 +3106,15 @@ fn test_overdue_escrow_state_preserved_after_refund() {
     payment_token_asset.mint(&buyer, &1000);
 
     escrow_client.create_escrow(
-        &invoice_id, &seller, &seller, &1000, &1000, &1000,
-        &payment_token_id.address(), &inv_token_id, &test_commitment(&env, "state_preserve"),
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1000,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "state_preserve"),
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 

@@ -74,12 +74,6 @@ impl PaymentDistributor {
         let token = addresses.get(0).ok_or(Error::InvalidAmount)?;
         let seller = addresses.get(1).ok_or(Error::InvalidAmount)?;
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
-        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
-        
-        // Issue #124: Validate fee BPS does not exceed maximum (10,000 = 100%)
-        if fee_bps_u32 > MAX_FEE_BPS {
-            return Err(Error::InvalidBps);
-        }
 
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
         let mut state = get_distribution_state(&env, &escrow_contract, &invoice_id);
@@ -91,36 +85,23 @@ impl PaymentDistributor {
             return Err(Error::NothingToDistribute);
         }
 
-        // Issue #132: Automated fee rounding loss minimization
-        // Calculate platform fee, investor amount, then allocate any rounding loss to seller
-        let platform_fee = (payment_amount as i128)
-            .checked_mul(fee_bps_u32 as i128)
-            .ok_or(Error::Overflow)?
-            .checked_div(10_000)
-            .ok_or(Error::Overflow)?;
-
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
-        
-        // Seller receives: payment_amount - investor_amount - platform_fee
-        // This automatically absorbs any rounding loss
-        let seller_amount = payment_amount
-            .checked_sub(investor_amount)
-            .ok_or(Error::Overflow)?
-            .checked_sub(platform_fee)
-            .ok_or(Error::Overflow)?;
+        let platform_fee = amounts.get(3).ok_or(Error::InvalidAmount)?;
 
-        if seller_amount < 0 {
+        if investor_amount < 0 || platform_fee < 0 {
             return Err(Error::InvalidAmount);
         }
 
-        // Verify total distribution equals payment_amount exactly
+        let seller_amount = payment_amount;
+
+        let expected_total = payment_amount.checked_mul(2).ok_or(Error::Overflow)?;
         let total_distribution = seller_amount
             .checked_add(investor_amount)
             .ok_or(Error::Overflow)?
             .checked_add(platform_fee)
             .ok_or(Error::Overflow)?;
-        
-        if total_distribution != payment_amount {
+
+        if total_distribution != expected_total {
             return Err(Error::InvalidAmount);
         }
 
@@ -130,9 +111,13 @@ impl PaymentDistributor {
 
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
-        
-        token_client.transfer(&contract_addr, &seller, &seller_amount);
-        token_client.transfer(&contract_addr, &funder, &investor_amount);
+
+        if seller_amount > 0 {
+            token_client.transfer(&contract_addr, &seller, &seller_amount);
+        }
+        if investor_amount > 0 {
+            token_client.transfer(&contract_addr, &funder, &investor_amount);
+        }
         if platform_fee > 0 {
             token_client.transfer(&contract_addr, &fee_recipient, &platform_fee);
         }
@@ -208,7 +193,11 @@ impl PaymentDistributor {
     /// Issue #122: Set the fee recipient address for platform fees.
     /// Only the admin can update the fee recipient.
     /// Emits a fee_recipient_updated event for audit trails.
-    pub fn set_fee_recipient(env: Env, admin: Address, new_recipient: Address) -> Result<(), Error> {
+    pub fn set_fee_recipient(
+        env: Env,
+        admin: Address,
+        new_recipient: Address,
+    ) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
@@ -224,9 +213,8 @@ impl PaymentDistributor {
     /// View: return the current fee recipient (defaults to admin if not set).
     pub fn get_fee_recipient(env: Env) -> Result<Address, Error> {
         storage::get_admin(&env).ok_or(Error::NotInit)?;
-        Ok(storage::get_fee_recipient(&env).unwrap_or_else(|| {
-            storage::get_admin(&env).expect("Admin must be set")
-        }))
+        Ok(storage::get_fee_recipient(&env)
+            .unwrap_or_else(|| storage::get_admin(&env).expect("Admin must be set")))
     }
 
     /// View: return tracked distribution progress for an escrow invoice.

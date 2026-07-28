@@ -6,17 +6,17 @@
 
 #![no_std]
 
+mod constants;
 mod errors;
 mod events;
 mod storage;
 mod types;
-mod constants;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 use crate::constants::*;
+use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;
-use crate::types::{TokenMetadata, MAX_DECIMALS, OwnershipHistoryRecord};
+use crate::types::{OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
 
 #[contract]
 pub struct InvoiceToken;
@@ -407,7 +407,12 @@ impl InvoiceToken {
 
     /// Mint tokens to multiple addresses in a batch. Callable only by admin or minter.
     /// `to` and `amounts` vectors must be of equal length. Each amount must be > 0.
-    pub fn mint_batch(env: Env, to: Vec<Address>, amounts: Vec<i128>, by: Address) -> Result<(), Error> {
+    pub fn mint_batch(
+        env: Env,
+        to: Vec<Address>,
+        amounts: Vec<i128>,
+        by: Address,
+    ) -> Result<(), Error> {
         by.require_auth();
         if to.len() != amounts.len() {
             return Err(Error::BatchLengthMismatch);
@@ -423,8 +428,11 @@ impl InvoiceToken {
         let mut total_amount: i128 = 0;
         for i in 0..amounts.len() {
             let amount = amounts.get(i).unwrap();
-            if amount <= 0 {
+            if amount < 0 {
                 return Err(Error::InvalidAmount);
+            }
+            if amount == 0 {
+                continue;
             }
             total_amount = total_amount.checked_add(amount).ok_or(Error::Overflow)?;
             let recipient = to.get(i).unwrap();

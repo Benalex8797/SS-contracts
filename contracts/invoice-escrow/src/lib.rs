@@ -147,12 +147,7 @@ impl InvoiceEscrow {
             &invoice_token,
             &commitment,
         );
-        events::escrow_status_changed(
-            &env,
-            invoice_id,
-            EscrowStatus::Created,
-            current_timestamp,
-        );
+        events::escrow_status_changed(&env, invoice_id, EscrowStatus::Created, current_timestamp);
         Ok(())
     }
 
@@ -397,7 +392,13 @@ impl InvoiceEscrow {
             );
         }
 
-        events::payment_settled(&env, invoice_id.clone(), amount, platform_fee, investor_amount);
+        events::payment_settled(
+            &env,
+            invoice_id.clone(),
+            amount,
+            platform_fee,
+            investor_amount,
+        );
         if data.status == EscrowStatus::Settled {
             events::escrow_status_changed(
                 &env,

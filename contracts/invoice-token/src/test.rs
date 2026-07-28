@@ -1,8 +1,29 @@
 //! Unit tests for the invoice token contract.
 
 use super::{InvoiceToken, InvoiceTokenClient};
-use soroban_sdk::{Address, Env, Symbol, Vec, Val, String as SorobanString, IntoVal, TryIntoVal, event::ContractEvent};
-use soroban_sdk::testutils::{Address as _, Ledger, Events};
+use soroban_sdk::testutils::{Address as _, Events, Ledger};
+use soroban_sdk::{
+    Address, Env, IntoVal, String as SorobanString, Symbol, TryFromVal, TryIntoVal, Val, Vec,
+};
+
+fn parse_event(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> (Address, Vec<Val>, Val) {
+    let contract_addr = match &event.contract_id {
+        Some(hash) => Address::try_from_val(
+            env,
+            &soroban_sdk::xdr::ScVal::Address(soroban_sdk::xdr::ScAddress::Contract(hash.clone())),
+        )
+        .unwrap(),
+        None => Address::generate(env),
+    };
+    let soroban_sdk::xdr::ContractEventBody::V0(v0) = &event.body;
+    let topics = Vec::<Val>::try_from_val(
+        env,
+        &soroban_sdk::xdr::ScVal::Vec(Some(v0.topics.clone().into())),
+    )
+    .unwrap();
+    let data = Val::try_from_val(env, &v0.data).unwrap();
+    (contract_addr, topics, data)
+}
 
 fn setup_token(env: &Env) -> (InvoiceTokenClient<'_>, Address, Address) {
     let contract_id = env.register(InvoiceToken, ());
@@ -179,7 +200,7 @@ fn test_set_transfer_locked_event_emission() {
 
     let events = env.events().all();
     let event = events.events().last().unwrap();
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
     assert_eq!(
         topics,
         (Symbol::new(&env, "transfer_locked_updated"),).into_val(&env)
@@ -216,7 +237,7 @@ fn test_set_minter_event_emission() {
 
     let events = env.events().all();
     let event = events.events().last().unwrap();
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
     assert_eq!(
         topics,
         (Symbol::new(&env, "minter_updated"),).into_val(&env)
@@ -290,7 +311,7 @@ fn test_transfer_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -321,7 +342,7 @@ fn test_approve_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -347,7 +368,7 @@ fn test_mint_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -398,7 +419,7 @@ fn test_burn_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -442,7 +463,7 @@ fn test_transfer_from_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -476,7 +497,7 @@ fn test_burn_from_event_emission() {
     let events = env.events().all();
     let event = events.events().last().unwrap();
 
-    let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -568,7 +589,7 @@ fn test_no_transfer_event_on_locked_failure() {
 
     for i in events_before..events_after.events().len() {
         let event = events_after.events().get(i).unwrap();
-        let (_addr, topics, _data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+        let (_addr, topics, _data) = parse_event(&env, event);
         if let Some(first_topic) = topics.get(0) {
             let symbol: Symbol = first_topic.try_into_val(&env).unwrap();
             assert_ne!(symbol, Symbol::new(&env, "transfer"));
@@ -597,7 +618,7 @@ fn test_multiple_events_in_sequence() {
     if event_count >= 3 {
         // Find and verify mint event (3rd from last)
         let mint_event = events.events().iter().rev().nth(2).unwrap();
-        let (addr1, topics1, _data1): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&mint_event.clone(), &env).try_into_val(&env).unwrap();
+        let (addr1, topics1, _data1) = parse_event(&env, mint_event);
         assert_eq!(
             topics1,
             (Symbol::new(&env, "mint"), user1.clone()).into_val(&env)
@@ -605,7 +626,7 @@ fn test_multiple_events_in_sequence() {
 
         // Find and verify transfer event (2nd from last)
         let transfer_event = events.events().iter().rev().nth(1).unwrap();
-        let (addr2, topics2, _data2): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&transfer_event.clone(), &env).try_into_val(&env).unwrap();
+        let (addr2, topics2, _data2) = parse_event(&env, transfer_event);
         assert_eq!(
             topics2,
             (Symbol::new(&env, "transfer"), user1.clone(), user2.clone()).into_val(&env)
@@ -613,7 +634,7 @@ fn test_multiple_events_in_sequence() {
 
         // Find and verify burn event (last)
         let burn_event = events.events().last().unwrap();
-        let (addr3, topics3, _data3): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&burn_event.clone(), &env).try_into_val(&env).unwrap();
+        let (addr3, topics3, _data3) = parse_event(&env, burn_event);
         assert_eq!(
             topics3,
             (Symbol::new(&env, "burn"), user2.clone()).into_val(&env)
@@ -979,14 +1000,12 @@ fn test_get_nonce_emits_event() {
 
     let events = env.events().all();
     let event = events.events().last().unwrap();
-    let (_contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
-    assert_eq!(
-        topics,
-        (Symbol::new(&env, "nonce_queried"), admin.clone()).into_val(&env)
-    );
+    assert_eq!(topics, (Symbol::new(&env, "nonce_queried"),).into_val(&env));
 
-    let emitted_nonce: u64 = data.try_into_val(&env).unwrap();
+    let (account, emitted_nonce): (Address, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(account, admin);
     assert_eq!(emitted_nonce, 0);
 }
 
@@ -1047,7 +1066,7 @@ fn test_set_fee_bps_event_emission() {
 
     let events = env.events().all();
     let event = events.events().last().unwrap();
-        let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (contract_addr, topics, data) = parse_event(&env, event);
     // redundant destructuring removed
 
     assert_eq!(topics, (Symbol::new(&env, "fee_updated"),).into_val(&env));
@@ -1163,11 +1182,11 @@ fn test_sub_asset_decimals_can_be_updated_within_supported_range() {
     let (client, _admin, _minter) = setup_token(&env);
 
     client.set_decimals(&18);
+    let events = env.events().all();
     assert_eq!(client.decimals(), 18);
 
-    let events = env.events().all();
     let event = events.events().last().unwrap();
-        let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (_contract_addr, topics, data) = parse_event(&env, event);
     assert_eq!(
         topics,
         (Symbol::new(&env, "decimals_updated"),).into_val(&env)
@@ -1246,11 +1265,11 @@ fn test_revoke_approval_clears_allowance_and_emits_event() {
     client.approve(&admin, &spender, &500, &expiration);
 
     client.revoke_approval(&admin, &spender);
+    let events = env.events().all();
     assert_eq!(client.allowance(&admin, &spender), 0);
 
-    let events = env.events().all();
     let event = events.events().last().unwrap();
-        let (contract_addr, topics, data): (Address, Vec<Val>, Val) = <ContractEvent as IntoVal<Env, Val>>::into_val(&event.clone(), &env).try_into_val(&env).unwrap();
+    let (_contract_addr, topics, data) = parse_event(&env, event);
     assert_eq!(
         topics,
         (Symbol::new(&env, "approval_revoked"), admin, spender).into_val(&env)
