@@ -57,6 +57,19 @@ pub fn paused_updated_event(env: &Env, old_value: bool, new_value: bool) {
     );
 }
 
+/// Emit an allowance expiration extension (topics ["allowance_extended", from, spender], data new_expiration_ledger).
+pub fn allowance_extended_event(
+    env: &Env,
+    from: &Address,
+    spender: &Address,
+    new_expiration_ledger: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "allow_extend"), from, spender),
+        new_expiration_ledger,
+    );
+}
+
 /// Emit a token-decimal configuration update.
 pub fn decimals_updated_event(env: &Env, old_value: u32, new_value: u32) {
     env.events().publish(

@@ -32,8 +32,9 @@ pub enum Error {
     /// Contract is paused and the requested operation is temporarily disabled.
     Paused = 13,
     /// Token decimals exceed the supported sub-asset precision.
-    InvalidFeeBps = 14,
-    InvalidDecimals = 15,
-    /// Batch length mismatch.
-    BatchLengthMismatch = 16,
+    InvalidDecimals = 12,
+    /// Token name or symbol metadata is empty (SEP-41 requires non-empty metadata).
+    InvalidMetadata = 13,
+    /// No allowance exists for (from, spender), so its expiration cannot be extended.
+    AllowanceNotFound = 14,
 }
