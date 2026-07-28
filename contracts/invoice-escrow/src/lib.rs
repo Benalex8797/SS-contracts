@@ -102,6 +102,7 @@ impl InvoiceEscrow {
         payment_token: Address,
         invoice_token: Address,
         commitment: soroban_sdk::BytesN<32>,
+        funding_milestone: Option<i128>,
     ) -> Result<(), Error> {
         seller.require_auth();
         if face_value <= 0 || purchase_price <= 0 {
@@ -119,6 +120,21 @@ impl InvoiceEscrow {
         if storage::has_escrow(&env, invoice_id.clone()) {
             return Err(Error::EscrowExists);
         }
+        // Ensure the payment token and invoice token use the same decimals to avoid
+        // settlement/rounding mismatches during distribution and fee calculations.
+        let inv_decimals: Option<u32> = env
+            .try_invoke_contract::<u32, soroban_sdk::Error>(&invoice_token, &Symbol::new(&env, "decimals"), soroban_sdk::vec![&env])
+            .ok()
+            .and_then(|r| r.ok());
+        let pay_decimals: Option<u32> = env
+            .try_invoke_contract::<u32, soroban_sdk::Error>(&payment_token, &Symbol::new(&env, "decimals"), soroban_sdk::vec![&env])
+            .ok()
+            .and_then(|r| r.ok());
+        if let (Some(inv_d), Some(pay_d)) = (inv_decimals, pay_decimals) {
+            if inv_d != pay_d {
+                return Err(Error::InvalidAssetDecimals);
+            }
+        }
         let data = EscrowData {
             inv_id: invoice_id.clone(),
             seller: seller.clone(),
@@ -132,6 +148,7 @@ impl InvoiceEscrow {
             inv_token: invoice_token.clone(),
             paid_amt: 0,
             status: EscrowStatus::Created,
+            funding_milestone,
             commitment: commitment.clone(),
         };
         storage::set_escrow(&env, invoice_id.clone(), &data);
@@ -146,6 +163,7 @@ impl InvoiceEscrow {
             &payment_token,
             &invoice_token,
             &commitment,
+            data.funding_milestone,
         );
         events::escrow_status_changed(&env, invoice_id, EscrowStatus::Created, current_timestamp);
         Ok(())
@@ -191,17 +209,26 @@ impl InvoiceEscrow {
     }
 
     /// Fund the escrow on behalf of `buyer` using a signed off-chain approval that a relayer
-    /// submits on their behalf. `buyer` authorizes exactly this `(invoice_id, amount, nonce)`
+    /// submits on their behalf. `buyer` authorizes exactly this `(invoice_id, amount, nonce, expiry)`
     /// tuple, and `nonce` must be strictly greater than the last nonce consumed by `buyer` so
     /// the same signed approval cannot be replayed.
+    ///
+    /// Issue #183: Includes an `expiry` timestamp. If the ledger timestamp exceeds `expiry`
+    /// the signature is rejected, limiting the window for replay attacks.
     pub fn fund_escrow_signed(
         env: Env,
         invoice_id: Symbol,
         buyer: Address,
         amount: i128,
         nonce: u64,
+        expiry: u64,
     ) -> Result<(), Error> {
-        buyer.require_auth_for_args((invoice_id.clone(), amount, nonce).into_val(&env));
+        buyer.require_auth_for_args((invoice_id.clone(), amount, nonce, expiry).into_val(&env));
+
+        let current_ts = env.ledger().timestamp();
+        if current_ts > expiry {
+            return Err(Error::SignatureExpired);
+        }
 
         let last_nonce = storage::get_nonce(&env, &buyer);
         if nonce <= last_nonce {
@@ -244,6 +271,19 @@ impl InvoiceEscrow {
         let new_funded = data.funded_amt.checked_add(amount).ok_or(Error::Overflow)?;
         if new_funded > data.purchase_price {
             return Err(Error::InvalidAmount);
+        }
+
+        // Validate milestone constraints if a milestone is set
+        if let Some(milestone) = data.funding_milestone {
+            let remaining_to_fund = data.purchase_price.checked_sub(data.funded_amt).ok_or(Error::Overflow)?;
+            
+            // Funder is always allowed to just fund exactly the remaining amount to complete the escrow.
+            // If they are not completing the escrow, the amount must be at least the milestone and a multiple of it.
+            if amount != remaining_to_fund {
+                if amount < milestone || amount % milestone != 0 {
+                    return Err(Error::InvalidMilestoneAmount);
+                }
+            }
         }
 
         let token = token::Client::new(env, &data.token);
@@ -357,8 +397,7 @@ impl InvoiceEscrow {
 
         storage::set_escrow(&env, invoice_id.clone(), &data);
 
-        // Extract funder address before branching so it is available in both paths.
-        let funder_opt = data.funder.clone();
+        let funder_addr = data.funder.clone().unwrap_or_else(|| data.seller.clone());
 
         if let Some(distributor) = config.payment_distributor.as_ref() {
             // The distributor must pay seller_amount (== amount) plus investor_amount + platform_fee
@@ -377,14 +416,17 @@ impl InvoiceEscrow {
                         &env,
                         <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&data.token, &env),
                         <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&data.seller, &env),
-                        <Option<Address> as IntoVal<Env, soroban_sdk::Val>>::into_val(
-                            &funder_opt,
-                            &env,
-                        ),
+                        <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&funder_addr, &env),
                         <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(&config.admin, &env)
                     ]
                     .into_val(&env),
-                    soroban_sdk::vec![&env, data.paid_amt, amount, investor_amount, platform_fee]
+                    soroban_sdk::vec![
+                        &env,
+                        data.paid_amt,
+                        amount,
+                        investor_amount,
+                        config.fee_bps as i128,
+                    ]
                         .into_val(&env),
                     (data.status as u32).into_val(&env)
                 ],
@@ -394,7 +436,7 @@ impl InvoiceEscrow {
             token.transfer(&contract, &config.admin, &platform_fee);
 
             // 3. Pro-rata investor distribution
-            if let Some(funder) = &funder_opt {
+            if let Some(funder) = &data.funder {
                 if data.funded_amt > 0 && investor_amount > 0 {
                     let funder_amt = storage::get_funder_amount(&env, invoice_id.clone(), funder);
                     let pro_rata_share = investor_amount

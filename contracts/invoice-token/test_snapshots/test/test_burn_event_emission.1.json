@@ -191,7 +191,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "ADMIN_ROLE"
+                            "symbol": "admin"
                           }
                         ]
                       },
@@ -206,7 +206,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           }
                         ]
                       },
@@ -221,7 +221,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "PAUSER_ROLE"
+                            "symbol": "pauser"
                           }
                         ]
                       },
@@ -236,7 +236,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "TRANSFER_LOCKER_ROLE"
+                            "symbol": "transfer_locker"
                           }
                         ]
                       },
@@ -251,7 +251,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "ADMIN_ROLE"
+                            "symbol": "admin"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -269,7 +269,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -287,7 +287,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -305,7 +305,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "PAUSER_ROLE"
+                            "symbol": "pauser"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -323,7 +323,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "TRANSFER_LOCKER_ROLE"
+                            "symbol": "transfer_locker"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

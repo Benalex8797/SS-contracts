@@ -49,6 +49,11 @@ impl MockInvoiceToken {
     pub fn set_transfer_locked(_env: Env, _caller: Address, _locked: bool) {
         // Mock the set_transfer_locked call — no-op for unit tests
     }
+
+    pub fn decimals(_env: Env) -> u32 {
+        // Match the typical Stellar asset decimals in tests
+        7
+    }
 }
 
 // ── Mock Token Environment Helpers (#139) ─────────────────────────────────
@@ -137,6 +142,7 @@ impl MockTokenEnvironment {
             &env_self.payment_token.id,
             &env_self.inv_token_id,
             &test_commitment(&env, "multi_token_test"),
+        &None,
         );
 
         env_self
@@ -209,6 +215,7 @@ fn test_create_and_fund() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Fund escrow
@@ -328,6 +335,7 @@ fn test_two_token_escrow_different_tokens() {
         &token_a_id,
         &inv_token_id,
         &test_commitment(&env, "token_a_invoice"),
+        &None,
     );
 
     // Fund and settle with token A
@@ -381,6 +389,7 @@ fn test_two_token_escrow_separate_escrows() {
         &token_a_id,
         &inv_token_id,
         &test_commitment(&env, "token_a"),
+        &None,
     );
 
     let invoice_b = Symbol::new(&env, "INV_B");
@@ -394,6 +403,7 @@ fn test_two_token_escrow_separate_escrows() {
         &token_b_id,
         &inv_token_id,
         &test_commitment(&env, "token_b"),
+        &None,
     );
 
     // Fund and settle both independently
@@ -463,6 +473,7 @@ fn test_record_payment() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
@@ -521,6 +532,7 @@ fn test_escrow_created_event() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Assert escrow_created event was emitted
@@ -556,6 +568,7 @@ fn test_escrow_created_event() {
         Address,
         Address,
         BytesN<32>,
+        Option<i128>,
     ) = data.try_into_val(&env).unwrap();
     assert_eq!(event_data.0, invoice_id);
     assert_eq!(event_data.1, seller);
@@ -603,6 +616,7 @@ fn test_escrow_funded_event() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
@@ -670,6 +684,7 @@ fn test_payment_settled_event() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
@@ -739,6 +754,7 @@ fn test_escrow_refunded_event() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
@@ -809,6 +825,7 @@ fn test_no_settlement_event_on_invalid_state() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Try to record payment without funding first (should fail)
@@ -863,6 +880,7 @@ fn test_no_refund_event_on_invalid_state() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Set ledger timestamp past due date
@@ -935,6 +953,7 @@ fn test_create_escrow_requires_seller_auth() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert!(result.is_err());
 }
@@ -997,6 +1016,7 @@ fn test_create_escrow_zero_amount() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
@@ -1027,6 +1047,7 @@ fn test_create_escrow_negative_amount() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
@@ -1057,6 +1078,7 @@ fn test_create_escrow_zero_face_value_only() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
@@ -1087,6 +1109,7 @@ fn test_create_escrow_zero_purchase_price_only() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
@@ -1117,6 +1140,7 @@ fn test_create_escrow_negative_face_value_only() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
@@ -1147,6 +1171,7 @@ fn test_create_escrow_negative_purchase_price_only() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
@@ -1177,6 +1202,7 @@ fn test_zero_amount_does_not_create_escrow() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Verify the escrow was NOT created (status lookup should fail)
@@ -1217,6 +1243,7 @@ fn test_fund_escrow_zero_amount() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Zero amount funding should fail
@@ -1257,6 +1284,7 @@ fn test_create_escrow_duplicate_invoice_id() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Second create with same invoice_id should fail
@@ -1270,6 +1298,7 @@ fn test_create_escrow_duplicate_invoice_id() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::EscrowExists)));
 }
@@ -1363,6 +1392,7 @@ fn test_fund_escrow_already_funded() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // First funding should succeed
@@ -1400,6 +1430,7 @@ fn test_record_payment_not_funded() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Try to record payment without funding first
@@ -1441,6 +1472,7 @@ fn test_record_payment_already_settled() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1485,6 +1517,7 @@ fn test_record_payment_amount_exceeds_escrow() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1520,6 +1553,7 @@ fn test_refund_not_funded() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Set time past due date
@@ -1565,6 +1599,7 @@ fn test_refund_before_due_date() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1611,6 +1646,7 @@ fn test_refund_at_due_date() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1663,6 +1699,7 @@ fn test_refund_after_due_date() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1716,6 +1753,7 @@ fn test_refund_already_settled() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1767,6 +1805,7 @@ fn test_fee_calculation_zero_fee() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1813,6 +1852,7 @@ fn test_fee_calculation_max_fee() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
@@ -1928,6 +1968,7 @@ fn test_get_escrow_data() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     // Get escrow data and verify
@@ -1968,6 +2009,7 @@ fn test_create_escrow_not_initialized() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::NotInit)));
 }
@@ -2021,6 +2063,7 @@ fn test_partial_payment_lifecycle() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
@@ -2104,6 +2147,7 @@ fn test_refund_after_partial_payment() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
@@ -2170,6 +2214,7 @@ fn test_record_payment_removes_initial_fund_even_on_full_payment() {
         &pt_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
 
@@ -2209,6 +2254,7 @@ fn setup_escrow_created(env: &Env) -> (Address, InvoiceEscrowClient<'_>, Address
         &pt_id.address(),
         &inv_token_id,
         &test_commitment(env, "test_invoice_data"),
+        &None,
     );
 
     let _ = (pt_asset,);
@@ -2301,6 +2347,7 @@ fn test_cancel_escrow_already_funded_rejected() {
         &pt_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
+        &None,
     );
     client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -2393,6 +2440,7 @@ fn test_pause_blocks_lifecycle_operations_and_unpause_restores() {
         &pt_id.address(),
         &inv_token_id,
         &test_commitment(&env, "pause_test_invoice"),
+        &None,
     );
     assert_eq!(create_while_paused, Err(Ok(Error::Paused)));
 
@@ -2408,6 +2456,7 @@ fn test_pause_blocks_lifecycle_operations_and_unpause_restores() {
         &pt_id.address(),
         &inv_token_id,
         &test_commitment(&env, "pause_test_invoice"),
+        &None,
     );
 
     // Pause and verify fund_escrow is blocked
@@ -2466,6 +2515,7 @@ fn test_create_escrow_with_commitment() {
         &payment_token,
         &inv_token,
         &commitment,
+        &None,
     );
 
     // Verify escrow was created with commitment
@@ -2501,6 +2551,7 @@ fn test_commitment_immutable_after_creation() {
         &payment_token,
         &inv_token,
         &original_commitment,
+        &None,
     );
 
     // Verify commitment is stored
@@ -2539,6 +2590,7 @@ fn test_commitment_included_in_created_event() {
         &payment_token,
         &inv_token,
         &commitment,
+        &None,
     );
 
     // Assert escrow_created event was emitted with commitment
@@ -2575,6 +2627,7 @@ fn test_commitment_included_in_created_event() {
         Address,
         Address,
         BytesN<32>,
+        Option<i128>,
     ) = data.try_into_val(&env).unwrap();
     assert_eq!(event_data.0, invoice_id);
     assert_eq!(event_data.1, seller);
@@ -2609,6 +2662,7 @@ fn test_different_commitments_for_different_invoices() {
         &payment_token,
         &inv_token,
         &commitment_a,
+        &None,
     );
 
     // Create second invoice with commitment B
@@ -2624,6 +2678,7 @@ fn test_different_commitments_for_different_invoices() {
         &payment_token,
         &inv_token,
         &commitment_b,
+        &None,
     );
 
     // Verify each invoice has its own commitment
@@ -2674,6 +2729,7 @@ fn test_commitment_persists_through_lifecycle() {
         &payment_token.address,
         &inv_token_id,
         &commitment,
+        &None,
     );
 
     // Verify commitment after creation
@@ -2729,6 +2785,7 @@ fn test_create_escrow_due_date_in_past_rejected() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "past_due_test"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidDueDate)));
 }
@@ -2763,6 +2820,7 @@ fn test_create_escrow_due_date_equal_to_current_timestamp_rejected() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "equal_timestamp_test"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidDueDate)));
 }
@@ -2793,6 +2851,7 @@ fn test_create_escrow_due_date_zero_rejected() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "zero_due_date_test"),
+        &None,
     );
     assert_eq!(result, Err(Ok(Error::InvalidDueDate)));
 }
@@ -2829,6 +2888,7 @@ fn test_create_escrow_due_date_in_future_accepted() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "future_due_test"),
+        &None,
     );
 
     // Verify escrow was created successfully
@@ -2871,10 +2931,11 @@ fn test_fund_escrow_signed_succeeds_with_valid_nonce() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "signed_fund_test"),
+        &None,
     );
 
     // A relayer submits the buyer's off-chain approved funding request with nonce 1.
-    escrow_client.fund_escrow_signed(&invoice_id, &buyer, &amount, &1u64);
+    escrow_client.fund_escrow_signed(&invoice_id, &buyer, &amount, &1u64, &u64::MAX);
 
     let status = escrow_client.get_escrow_status(&invoice_id);
     assert_eq!(status, EscrowStatus::Funded);
@@ -2917,6 +2978,7 @@ fn test_fund_escrow_signed_rejects_replayed_nonce() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "signed_fund_replay_a"),
+        &None,
     );
     escrow_client.create_escrow(
         &invoice_id_b,
@@ -2928,16 +2990,17 @@ fn test_fund_escrow_signed_rejects_replayed_nonce() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "signed_fund_replay_b"),
+        &None,
     );
 
-    escrow_client.fund_escrow_signed(&invoice_id_a, &buyer, &amount, &1u64);
+    escrow_client.fund_escrow_signed(&invoice_id_a, &buyer, &amount, &1u64, &u64::MAX);
 
     // Reusing nonce 1 (even against a different invoice) must be rejected as a replay.
-    let result = escrow_client.try_fund_escrow_signed(&invoice_id_b, &buyer, &amount, &1u64);
+    let result = escrow_client.try_fund_escrow_signed(&invoice_id_b, &buyer, &amount, &1u64, &u64::MAX);
     assert_eq!(result, Err(Ok(Error::NonceAlreadyUsed)));
 
     // A strictly increasing nonce is accepted.
-    escrow_client.fund_escrow_signed(&invoice_id_b, &buyer, &amount, &2u64);
+    escrow_client.fund_escrow_signed(&invoice_id_b, &buyer, &amount, &2u64, &u64::MAX);
     assert_eq!(
         escrow_client.get_escrow_status(&invoice_id_b),
         EscrowStatus::Funded
@@ -2976,6 +3039,7 @@ fn test_refund_one_second_before_due_date() {
         &payment_token_id.address(),
         &inv_token_id,
         &test_commitment(&env, "before_refund"),
+        &None,
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
 
@@ -3027,6 +3091,7 @@ fn test_cleanup_escrow_removes_settled_record() {
         &payment_token.address,
         &inv_token_id,
         &test_commitment(&env, "cleanup_test"),
+        &None,
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
     escrow_client.record_payment(&invoice_id, &payer, &amount);
@@ -3067,6 +3132,7 @@ fn test_cleanup_escrow_rejects_non_terminal_status() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "cleanup_non_terminal"),
+        &None,
     );
 
     let result = escrow_client.try_cleanup_escrow(&invoice_id, &seller);
@@ -3100,9 +3166,194 @@ fn test_cleanup_escrow_rejects_unauthorized_caller() {
         &payment_token,
         &inv_token,
         &test_commitment(&env, "cleanup_unauthorized"),
+        &None,
     );
     escrow_client.cancel_escrow(&invoice_id, &seller);
 
     let result = escrow_client.try_cleanup_escrow(&invoice_id, &stranger);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+// ========== Milestone Funding Tests ==========
+
+#[test]
+fn test_fund_escrow_respects_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_MILE");
+    let milestone = 200i128;
+    
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1000000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "milestone_test"),
+        &Some(milestone),
+    );
+
+    // Fund exactly the milestone
+    escrow_client.fund_escrow(&invoice_id, &buyer, &milestone);
+    
+    // Fund a multiple of the milestone
+    escrow_client.fund_escrow(&invoice_id, &buyer, &(milestone * 2));
+    
+    let escrow = escrow_client.get_escrow(&invoice_id);
+    assert_eq!(escrow.funded_amt, milestone * 3);
+}
+
+#[test]
+fn test_fund_escrow_rejects_below_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_BELOW");
+    let milestone = 200i128;
+    
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1000000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "milestone_below_test"),
+        &Some(milestone),
+    );
+
+    // Fund below the milestone
+    let result = escrow_client.try_fund_escrow(&invoice_id, &buyer, &199);
+    assert_eq!(result, Err(Ok(Error::InvalidMilestoneAmount)));
+}
+
+#[test]
+fn test_fund_escrow_rejects_not_multiple_of_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_MULT");
+    let milestone = 200i128;
+    
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1000000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "milestone_mult_test"),
+        &Some(milestone),
+    );
+
+    // Fund above milestone but not a multiple
+    let result = escrow_client.try_fund_escrow(&invoice_id, &buyer, &250);
+    assert_eq!(result, Err(Ok(Error::InvalidMilestoneAmount)));
+}
+
+#[test]
+fn test_fund_escrow_allows_remainder_below_milestone() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_REM");
+    let milestone = 300i128; // purchase_price is 1000, so remaining will be 100
+    
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1000000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "milestone_rem_test"),
+        &Some(milestone),
+    );
+
+    escrow_client.fund_escrow(&invoice_id, &buyer, &900);
+    
+    // Remaining is 100, which is below milestone (300).
+    // Funder must provide exactly 100.
+    
+    let result_wrong = escrow_client.try_fund_escrow(&invoice_id, &buyer, &50);
+    assert_eq!(result_wrong, Err(Ok(Error::InvalidMilestoneAmount)));
+    
+    escrow_client.fund_escrow(&invoice_id, &buyer, &100);
+    
+    let escrow = escrow_client.get_escrow(&invoice_id);
+    assert_eq!(escrow.status, EscrowStatus::Funded);
 }

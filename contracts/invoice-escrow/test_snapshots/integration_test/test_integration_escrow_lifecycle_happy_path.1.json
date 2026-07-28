@@ -98,7 +98,7 @@
                   "i128": "1000"
                 },
                 {
-                  "u64": "10000"
+                  "u64": "100000"
                 },
                 {
                   "address": "CD3FXVGYSLQFFTW3UH6WFF2OKZH7VERGZJZAMJHTGHBWO4F6URWEJL23"
@@ -107,8 +107,9 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "bytes": "746573745f696e766f6963655f64617461000000000000000000000000000000"
-                }
+                  "bytes": "636f6d6d69746d656e7400000000000000000000000000000000000000000000"
+                },
+                "void"
               ]
             }
           },
@@ -162,6 +163,7 @@
         }
       ]
     ],
+    [],
     [],
     [],
     [],
@@ -403,7 +405,7 @@
                       "symbol": "commitment"
                     },
                     "val": {
-                      "bytes": "746573745f696e766f6963655f64617461000000000000000000000000000000"
+                      "bytes": "636f6d6d69746d656e7400000000000000000000000000000000000000000000"
                     }
                   },
                   {
@@ -419,7 +421,7 @@
                       "symbol": "due_dt"
                     },
                     "val": {
-                      "u64": "10000"
+                      "u64": "100000"
                     }
                   },
                   {
@@ -445,6 +447,12 @@
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "funding_milestone"
+                    },
+                    "val": "void"
                   },
                   {
                     "key": {
@@ -808,7 +816,7 @@
                               "symbol": "decimals"
                             },
                             "val": {
-                              "u32": 18
+                              "u32": 7
                             }
                           },
                           {
@@ -832,7 +840,7 @@
                               "symbol": "name"
                             },
                             "val": {
-                              "string": "Invoice #1"
+                              "string": "Test Invoice Token"
                             }
                           },
                           {
@@ -848,7 +856,7 @@
                               "symbol": "symbol"
                             },
                             "val": {
-                              "string": "INV1"
+                              "string": "TIT"
                             }
                           },
                           {
@@ -869,7 +877,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "ADMIN_ROLE"
+                            "symbol": "admin"
                           }
                         ]
                       },
@@ -884,7 +892,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           }
                         ]
                       },
@@ -899,7 +907,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "PAUSER_ROLE"
+                            "symbol": "pauser"
                           }
                         ]
                       },
@@ -914,7 +922,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "TRANSFER_LOCKER_ROLE"
+                            "symbol": "transfer_locker"
                           }
                         ]
                       },
@@ -929,7 +937,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "ADMIN_ROLE"
+                            "symbol": "admin"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -947,7 +955,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -965,7 +973,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -983,7 +991,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "PAUSER_ROLE"
+                            "symbol": "pauser"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -1001,7 +1009,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "TRANSFER_LOCKER_ROLE"
+                            "symbol": "transfer_locker"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"

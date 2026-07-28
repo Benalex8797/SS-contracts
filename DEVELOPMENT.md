@@ -44,7 +44,7 @@ Run `cargo install cargo-audit --locked` once locally if the `cargo audit` comma
 
 ### 1. Requirements
 - Rust stable toolchain (`1.80+`) with target `wasm32-unknown-unknown`
-- Soroban CLI (`soroban-cli` 22.0.0+)
+- Stellar CLI / Soroban CLI (`stellar-cli` / `soroban-cli` pinned to `22.0.0`)
 - `cargo-tarpaulin` (optional, for code coverage reports)
 
 ### 2. Standard Commands
@@ -61,6 +61,16 @@ cargo test --package payment-distributor
 # Run deployment script locally or against testnet
 bash scripts/deploy.sh
 ```
+
+### 3. Git Pre-Commit Hooks
+
+To automatically enforce formatting and linting before every commit:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+This installs a git hook at `.git/hooks/pre-commit` that runs `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
 
 ---
 

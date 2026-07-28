@@ -37,6 +37,28 @@
         {
           "function": {
             "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "function_name": "set_escrow_contract",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
               "function_name": "set_payment_distributor",
               "args": [
@@ -93,6 +115,26 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "801925984706572462"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "1033654523790656264"
                 }
               },
               "durability": "temporary",
@@ -226,6 +268,18 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                       }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "EscrowContract"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                      }
                     }
                   ]
                 }
@@ -274,7 +328,7 @@
                               "symbol": "decimals"
                             },
                             "val": {
-                              "u32": 18
+                              "u32": 7
                             }
                           },
                           {
@@ -335,7 +389,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "ADMIN_ROLE"
+                            "symbol": "admin"
                           }
                         ]
                       },
@@ -350,7 +404,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           }
                         ]
                       },
@@ -365,7 +419,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "PAUSER_ROLE"
+                            "symbol": "pauser"
                           }
                         ]
                       },
@@ -380,7 +434,7 @@
                             "symbol": "RoleAdmin"
                           },
                           {
-                            "symbol": "TRANSFER_LOCKER_ROLE"
+                            "symbol": "transfer_locker"
                           }
                         ]
                       },
@@ -395,7 +449,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "ADMIN_ROLE"
+                            "symbol": "admin"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -413,7 +467,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -431,7 +485,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "MINTER_ROLE"
+                            "symbol": "minter"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -449,7 +503,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "PAUSER_ROLE"
+                            "symbol": "pauser"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -467,7 +521,7 @@
                             "symbol": "RoleGrant"
                           },
                           {
-                            "symbol": "TRANSFER_LOCKER_ROLE"
+                            "symbol": "transfer_locker"
                           },
                           {
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"

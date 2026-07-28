@@ -15,7 +15,7 @@ pub enum StorageKey {
     FunderAmount(soroban_sdk::Symbol, soroban_sdk::Address),
     /// Persistent: highest nonce consumed for a signed off-chain approval, by buyer address.
     Nonce(soroban_sdk::Address),
-    /// Persistent: buyer whitelist status by buyer address.
+    /// Persistent: buyer whitelist flag by buyer address.
     BuyerWhitelist(soroban_sdk::Address),
 }
 
@@ -82,6 +82,8 @@ pub struct EscrowData {
     pub paid_amt: i128,
     /// Current status.
     pub status: EscrowStatus,
+    /// Minimum chunk size required for each partial funding operation (except the final one).
+    pub funding_milestone: Option<i128>,
     /// Commitment hash: immutable on-chain anchor for off-chain invoice data (PDF hash, ERP ID, etc.).
     /// Set at creation, cannot be modified. SHA-256 hash (32 bytes).
     pub commitment: soroban_sdk::BytesN<32>,

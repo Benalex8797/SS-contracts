@@ -42,7 +42,8 @@
                 },
                 {
                   "bytes": "6f726967696e616c5f696e766f6963655f646174610000000000000000000000"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -125,6 +126,12 @@
                   {
                     "key": {
                       "symbol": "funder"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "funding_milestone"
                     },
                     "val": "void"
                   },

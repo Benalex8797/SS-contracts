@@ -17,6 +17,10 @@ use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString,
 
 use crate::errors::Error;
 use crate::types::{OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
+const ADMIN_ROLE: &str = "admin";
+const MINTER_ROLE: &str = "minter";
+const PAUSER_ROLE: &str = "pauser";
+const TRANSFER_LOCKER_ROLE: &str = "transfer_locker";
 
 #[contract]
 pub struct InvoiceToken;
@@ -214,6 +218,10 @@ impl InvoiceToken {
         if amount < 0 {
             return Err(Error::InvalidAmount);
         }
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         let ledger = env.ledger().sequence();
         if amount != 0 && expiration_ledger < ledger {
             return Err(Error::InvalidExpiration);
@@ -233,7 +241,10 @@ impl InvoiceToken {
         new_expiration_ledger: u32,
     ) -> Result<(), Error> {
         from.require_auth();
-        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         let allow =
             storage::get_allowance_data(&env, &from, &spender).ok_or(Error::AllowanceNotFound)?;
         let ledger = env.ledger().sequence();
@@ -251,7 +262,10 @@ impl InvoiceToken {
     /// Revoke `spender`'s allowance. Requires `from` authorization.
     pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
         from.require_auth();
-        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        if meta.paused {
+            return Err(Error::Paused);
+        }
         storage::set_allowance(&env, &from, &spender, 0, 0);
         events::approval_revoked_event(&env, &from, &spender);
         Ok(())

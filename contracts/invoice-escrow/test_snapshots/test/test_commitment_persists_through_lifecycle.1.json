@@ -107,7 +107,8 @@
                 },
                 {
                   "bytes": "6c6966656379636c655f746573745f696e766f69636500000000000000000000"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -329,6 +330,12 @@
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "funding_milestone"
+                    },
+                    "val": "void"
                   },
                   {
                     "key": {
