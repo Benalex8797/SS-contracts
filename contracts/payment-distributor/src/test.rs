@@ -60,6 +60,7 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> TestContext<'_
 
     escrow.initialize(&admin, &fee_bps);
     distributor.initialize(&admin);
+    distributor.set_escrow_contract(&admin, &escrow_id);
     if configure_distributor {
         escrow.set_payment_distributor(&distributor_id);
     }
@@ -665,6 +666,7 @@ fn test_reentrant_callback_into_distribute_payment_is_rejected() {
     let funder = Address::generate(&env);
     let escrow = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "REENTR");
+    distributor.set_escrow_contract(&admin, &escrow);
 
     // Register the malicious token that will re-enter on `transfer`.
     let token_id = env.register(

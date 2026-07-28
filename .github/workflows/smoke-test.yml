@@ -26,7 +26,13 @@ jobs:
 
       - name: Install Stellar CLI
         run: |
-          cargo install --locked stellar-cli --features opt
+          cargo install --locked stellar-cli --version 22.0.0 --features opt
+
+      - name: Verify Stellar CLI Version
+        run: |
+          CLI_VERSION=$(stellar --version 2>/dev/null || soroban --version 2>/dev/null)
+          echo "Installed CLI version: $CLI_VERSION"
+          echo "$CLI_VERSION" | grep -q "22\.0\.0" || { echo "Error: Stellar CLI version is not 22.0.0" >&2; exit 1; }
 
       - name: Run smoke test
         env:
