@@ -221,3 +221,332 @@ fn test_refund_distribution_can_only_happen_once() {
     );
     assert_eq!(second_refund, Err(Ok(Error::RefundAlreadyDistributed)));
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// distribute_batch tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+use super::storage;
+use super::types::DistributionState;
+
+/// Helper: mint `amount` tokens to `distributor_id` so it can pay out.
+fn fund_distributor(ctx: &TestContext<'_>, amount: i128) {
+    ctx.payment_asset.mint(&ctx.distributor_id, &amount);
+}
+
+/// Build a minimal valid `BatchPaymentEntry` for the shared ctx invoice.
+/// `paid_amt` is cumulative; `seller_amt` == delta from previous state.
+fn make_entry(
+    env: &Env,
+    ctx: &TestContext<'_>,
+    paid_amt: i128,
+    seller_amt: i128,
+    investor_amt: i128,
+    fee_amt: i128,
+    status: u32,
+) -> BatchPaymentEntry {
+    BatchPaymentEntry {
+        escrow: ctx.escrow_id.clone(),
+        inv_id: ctx.invoice_id.clone(),
+        token: ctx.payment_token.address.clone(),
+        seller: ctx.seller.clone(),
+        funder: ctx.buyer.clone(),
+        admin: ctx.admin.clone(),
+        paid_amt,
+        seller_amt,
+        investor_amt,
+        fee_amt,
+        status,
+    }
+}
+
+#[test]
+fn test_batch_not_initialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    let escrow_id = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_X");
+
+    let entry = BatchPaymentEntry {
+        escrow: escrow_id.clone(),
+        inv_id: invoice_id.clone(),
+        token: Address::generate(&env),
+        seller: Address::generate(&env),
+        funder: Address::generate(&env),
+        admin: Address::generate(&env),
+        paid_amt: 100,
+        seller_amt: 100,
+        investor_amt: 97,
+        fee_amt: 3,
+        status: 2u32,
+    };
+
+    let result = distributor.try_distribute_batch(&soroban_sdk::vec![&env, entry]);
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+#[test]
+fn test_batch_empty_entries_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    let result = ctx
+        .distributor
+        .try_distribute_batch(&soroban_sdk::vec![&env]);
+    assert_eq!(result, Err(Ok(Error::EmptyBatch)));
+}
+
+#[test]
+fn test_batch_too_large_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+
+    // Build 51 entries (MAX_BATCH_SIZE = 50).
+    let mut entries: soroban_sdk::Vec<BatchPaymentEntry> = soroban_sdk::vec![&env];
+    for _ in 0..51u32 {
+        let escrow = Address::generate(&env);
+        let inv_id = Symbol::new(&env, "INV_BIG");
+        entries.push_back(BatchPaymentEntry {
+            escrow,
+            inv_id,
+            token: ctx.payment_token.address.clone(),
+            seller: ctx.seller.clone(),
+            funder: ctx.buyer.clone(),
+            admin: ctx.admin.clone(),
+            paid_amt: 100,
+            seller_amt: 100,
+            investor_amt: 97,
+            fee_amt: 3,
+            status: 2u32,
+        });
+    }
+
+    let result = ctx.distributor.try_distribute_batch(&entries);
+    assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
+}
+
+#[test]
+fn test_batch_invalid_escrow_status_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    fund_distributor(&ctx, 100);
+
+    let entry = make_entry(&env, &ctx, 100, 100, 97, 3, 0u32); // status=Created
+    let result = ctx
+        .distributor
+        .try_distribute_batch(&soroban_sdk::vec![&env, entry]);
+    assert_eq!(result, Err(Ok(Error::InvalidEscrowStatus)));
+}
+
+#[test]
+fn test_batch_nothing_to_distribute_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    fund_distributor(&ctx, 200);
+
+    // Manually set distribution state so paid_distributed == paid_amt we are about to pass.
+    storage::set_distribution(
+        &env,
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &DistributionState {
+            paid_distributed: 100,
+            refund_distributed: false,
+        },
+    );
+
+    // paid_amt == state.paid_distributed → delta == 0 → NothingToDistribute
+    let entry = make_entry(&env, &ctx, 100, 100, 97, 3, 2u32);
+    let result = ctx
+        .distributor
+        .try_distribute_batch(&soroban_sdk::vec![&env, entry]);
+    assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
+}
+
+#[test]
+fn test_batch_seller_amt_mismatch_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    fund_distributor(&ctx, 200);
+
+    // paid_amt=100, delta=100, but seller_amt=90 → mismatch
+    let entry = make_entry(&env, &ctx, 100, 90, 87, 3, 2u32);
+    let result = ctx
+        .distributor
+        .try_distribute_batch(&soroban_sdk::vec![&env, entry]);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_batch_investor_fee_sum_mismatch_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    fund_distributor(&ctx, 200);
+
+    // investor_amt + fee_amt = 96 + 3 = 99 ≠ seller_amt=100 → mismatch
+    let entry = make_entry(&env, &ctx, 100, 100, 96, 3, 2u32);
+    let result = ctx
+        .distributor
+        .try_distribute_batch(&soroban_sdk::vec![&env, entry]);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_batch_single_entry_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    fund_distributor(&ctx, 1_000);
+
+    let entry = make_entry(&env, &ctx, 1_000, 1_000, 970, 30, 2u32);
+    ctx.distributor
+        .distribute_batch(&soroban_sdk::vec![&env, entry]);
+
+    // Seller receives 1_000, investor receives 970, admin receives 30.
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 970);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 30);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 1_000);
+    assert!(!state.refund_distributed);
+}
+
+#[test]
+fn test_batch_multiple_entries_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+
+    // Two separate escrow/invoice pairs.
+    let escrow2 = Address::generate(&env);
+    let inv2 = Symbol::new(&env, "INV_B");
+
+    // Fund distributor with combined total.
+    fund_distributor(&ctx, 2_000);
+
+    let entry1 = make_entry(&env, &ctx, 1_000, 1_000, 970, 30, 2u32);
+    let entry2 = BatchPaymentEntry {
+        escrow: escrow2.clone(),
+        inv_id: inv2.clone(),
+        token: ctx.payment_token.address.clone(),
+        seller: ctx.seller.clone(),
+        funder: ctx.buyer.clone(),
+        admin: ctx.admin.clone(),
+        paid_amt: 1_000,
+        seller_amt: 1_000,
+        investor_amt: 970,
+        fee_amt: 30,
+        status: 2u32,
+    };
+
+    ctx.distributor
+        .distribute_batch(&soroban_sdk::vec![&env, entry1, entry2]);
+
+    // Combined: seller 2_000, buyer 1_940, admin 60.
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 2_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 1_940);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 60);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+
+    // Both distribution states updated.
+    let s1 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(s1.paid_distributed, 1_000);
+
+    let s2 = ctx
+        .distributor
+        .get_distribution_state(&escrow2, &inv2);
+    assert_eq!(s2.paid_distributed, 1_000);
+}
+
+#[test]
+fn test_batch_incremental_two_calls_tracks_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true); // 5% fee
+    fund_distributor(&ctx, 1_000);
+
+    // First batch: partial payment (400 of 1000).
+    // fee = 400 * 5% = 20, investor = 380, seller = 400
+    let entry1 = make_entry(&env, &ctx, 400, 400, 380, 20, 1u32); // Funded
+    ctx.distributor
+        .distribute_batch(&soroban_sdk::vec![&env, entry1]);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 400);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 380);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 20);
+
+    // Second batch: remaining payment (1000 total - 400 already = 600 delta).
+    // fee = 600 * 5% = 30, investor = 570, seller = 600
+    let entry2 = make_entry(&env, &ctx, 1_000, 600, 570, 30, 2u32); // Settled
+    ctx.distributor
+        .distribute_batch(&soroban_sdk::vec![&env, entry2]);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 950);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 50);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 1_000);
+}
+
+#[test]
+fn test_batch_funded_status_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 0, true); // 0% fee
+    fund_distributor(&ctx, 500);
+
+    // Status = Funded (1) — partial payment, still active.
+    let entry = make_entry(&env, &ctx, 500, 500, 500, 0, 1u32);
+    ctx.distributor
+        .distribute_batch(&soroban_sdk::vec![&env, entry]);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 500);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 500);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+}
+
+#[test]
+fn test_batch_zero_fee_no_admin_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 0, true); // 0% fee
+    fund_distributor(&ctx, 1_000);
+
+    let entry = make_entry(&env, &ctx, 1_000, 1_000, 1_000, 0, 2u32);
+    ctx.distributor
+        .distribute_batch(&soroban_sdk::vec![&env, entry]);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 0);
+}

@@ -79,7 +79,8 @@ impl InvoiceEscrow {
         if due_date <= current_timestamp {
             return Err(Error::InvalidDueDate);
         }
-        storage::get_config(&env).ok_or(Error::NotInit)?;
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        ensure_not_paused(&config)?;
         if storage::has_escrow(&env, invoice_id.clone()) {
             return Err(Error::EscrowExists);
         }
@@ -295,7 +296,7 @@ impl InvoiceEscrow {
                         &env,
                         data.token.clone(),
                         data.seller.clone(),
-                        funder_opt.clone().into_val(&env),
+                        funder_opt.clone().unwrap_or(contract.clone()),
                         config.admin.clone()
                     ]
                     .into_val(&env),
@@ -384,7 +385,7 @@ impl InvoiceEscrow {
                         soroban_sdk::vec![
                             &env,
                             data.token.clone(),
-                            funder_opt.clone().into_val(&env)
+                            funder_opt.clone().unwrap_or(contract.clone())
                         ]
                         .into_val(&env),
                         soroban_sdk::vec![&env, amount_to_refund].into_val(&env),

@@ -13,4 +13,8 @@ pub enum Error {
     RefundAlreadyDistributed = 7,
     Overflow = 8,
     WrongDistributor = 9,
+    /// Batch must contain at least one entry.
+    EmptyBatch = 10,
+    /// Batch exceeds the maximum allowed number of entries.
+    BatchTooLarge = 11,
 }

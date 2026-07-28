@@ -35,3 +35,12 @@ pub fn refund_distributed(
     );
     env.events().publish(topics, (funder, amount));
 }
+
+/// Publish a batch_distributed event after a successful `distribute_batch` call.
+///
+/// `count`  — number of entries processed in this batch.
+/// `total`  — sum of all payment deltas distributed.
+pub fn batch_distributed(env: &Env, count: u32, total: i128) {
+    let topics = (Symbol::new(env, "batch_dist"),);
+    env.events().publish(topics, (count, total));
+}
