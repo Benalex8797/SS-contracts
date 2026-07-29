@@ -622,7 +622,7 @@ impl InvoiceEscrow {
         Ok(())
     }
 
-    /// View: return escrow data for an invoice, or None if not found.
+    /// View: return escrow data for an invoice, or Err(Error::EscrowNotFound) if not found.
     pub fn get_escrow(env: Env, invoice_id: Symbol) -> Result<EscrowData, Error> {
         storage::get_escrow(&env, invoice_id).ok_or(Error::EscrowNotFound)
     }
