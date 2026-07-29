@@ -37,6 +37,7 @@ fn ensure_not_paused(config: &Config) -> Result<(), Error> {
 impl InvoiceEscrow {
     /// Initialize the contract with admin and platform fee (basis points, e.g. 300 = 3%).
     pub fn initialize(env: Env, admin: Address, platform_fee_bps: u32) -> Result<(), Error> {
+        admin.require_auth();
         if storage::get_config(&env).is_some() {
             return Err(Error::AlreadyInit);
         }

@@ -3358,3 +3358,17 @@ fn test_fund_escrow_allows_remainder_below_milestone() {
     let escrow = escrow_client.get_escrow(&invoice_id);
     assert_eq!(escrow.status, EscrowStatus::Funded);
 }
+
+#[test]
+#[should_panic(expected = "not authorized")]
+fn test_initialize_not_authorized() {
+    let env = Env::default();
+    // Do NOT mock_all_auths() here so that admin.require_auth() fails.
+    
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    
+    // This should panic because the test environment doesn't provide auth for `admin`
+    escrow_client.initialize(&admin, &300);
+}
