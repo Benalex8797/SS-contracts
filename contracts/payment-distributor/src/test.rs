@@ -1332,3 +1332,315 @@ fn test_sweep_dust_nothing_to_sweep() {
     let result = distributor.try_sweep_dust(&admin, &token.address);
     assert_eq!(result, Err(Ok(Error::NothingToSweep)));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Standalone distributor edge-case tests (no full escrow wiring)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Verify that a freshly initialized distributor can receive tokens and
+/// immediately distribute them, with correct balances and state persistence.
+///
+/// Contract math for distribute_payment:
+///   payment_amount = paid_amount - already_distributed = 1000 - 0 = 1000
+///   platform_fee   = 1000 * 300 / 10000 = 30
+///   seller_amount  = payment_amount = 1000
+///   investor_amount = amounts[2] = 400
+///   total_distribution = 1000 + 400 + 30 = 1430
+///
+/// The distributor must hold ≥ total_distribution tokens before the call.
+#[test]
+fn test_initialize_and_distribute() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_INIT");
+
+    // Bind the escrow so the whitelist check passes.
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Fund the distributor with the total needed: seller(1000) + investor(400) + fee(30) = 1430.
+    asset.mint(&distributor_id, &1_430);
+
+    // Distribute: paid_amount=1000, investor=400, fee_bps=300 (3%)
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            token.address.clone(),
+            seller.clone(),
+            funder.clone(),
+            admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 1_000i128, 1_000i128, 400i128, 300i128],
+        &2u32, // ESCROW_STATUS_SETTLED
+    );
+    assert!(
+        result.is_ok(),
+        "distribute_payment should succeed: {result:?}"
+    );
+
+    // seller gets 1000 (full payment delta)
+    assert_eq!(token.balance(&seller), 1_000);
+    // investor (funder) gets 400
+    assert_eq!(token.balance(&funder), 400);
+    // platform fee: 1000 * 300 / 10000 = 30
+    assert_eq!(token.balance(&admin), 30);
+    // No dust left in the distributor
+    assert_eq!(token.balance(&distributor_id), 0);
+
+    // State must be persisted: paid_distributed == paid_amount
+    let state = distributor.get_distribution_state(&escrow, &invoice_id);
+    assert_eq!(state.paid_distributed, 1_000);
+    assert!(!state.refund_distributed);
+}
+
+/// Passing paid_amount == 0 (equal to already-distributed 0) yields
+/// NothingToDistribute because the payment delta is zero.
+#[test]
+fn test_distribute_zero_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_ZERO");
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    asset.mint(&distributor_id, &1_000);
+
+    // paid_amount = 0 → payment_delta = 0 − 0 = 0 → NothingToDistribute
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 0i128, 0i128, 0i128, 0i128],
+        &2u32,
+    );
+    assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
+
+    // No funds should have moved
+    assert_eq!(token.balance(&distributor_id), 1_000);
+}
+
+/// Passing a negative paid_amount produces NothingToDistribute because
+/// the payment delta (negative − 0 = negative) is ≤ 0.
+#[test]
+fn test_distribute_negative_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_NEG");
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    asset.mint(&distributor_id, &1_000);
+
+    // paid_amount = -500 → payment_delta = -500 − 0 = -500 ≤ 0
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, -500i128, -500i128, 0i128, 0i128],
+        &2u32,
+    );
+    assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
+
+    // Funds untouched
+    assert_eq!(token.balance(&distributor_id), 1_000);
+}
+
+/// Calling distribute_payment before initialize() returns NotInit.
+#[test]
+fn test_distribute_not_initialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deliberately skip initialize().
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    let (token, asset) = make_token(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_NOINIT");
+
+    asset.mint(&distributor_id, &1_000);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, escrow.clone()],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+/// A non-admin, non-operator caller to distribute_multi_asset must be rejected
+/// with Unauthorized. This exercises the authorization guard directly on the
+/// distributor without going through the full escrow wiring.
+#[test]
+fn test_distribute_unauthorized_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    asset.mint(&distributor_id, &1_000);
+
+    let attacker = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 1_000,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, recipient],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&attacker, &soroban_sdk::vec![&env, route]);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // No funds should have moved
+    assert_eq!(token.balance(&distributor_id), 1_000);
+}
+
+/// Distribute exactly the full token balance held by the distributor.
+/// Verifies that the contract can drain itself to zero with no leftover dust.
+#[test]
+fn test_distribute_full_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_FULL");
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Fund the distributor with exactly the amount we will distribute.
+    // paid_amount=500, investor_amount=200, fee_bps=0 → total needed = 700.
+    let total = 700i128;
+    asset.mint(&distributor_id, &total);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            token.address.clone(),
+            seller.clone(),
+            funder.clone(),
+            admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 500i128, 500i128, 200i128, 0i128],
+        &2u32,
+    );
+    assert!(
+        result.is_ok(),
+        "full-balance distribute should succeed: {result:?}"
+    );
+
+    // seller = 500, funder = 200, fee = 0
+    assert_eq!(token.balance(&seller), 500);
+    assert_eq!(token.balance(&funder), 200);
+    // The contract itself must be fully drained
+    assert_eq!(token.balance(&distributor_id), 0);
+
+    // State persisted correctly
+    let state = distributor.get_distribution_state(&escrow, &invoice_id);
+    assert_eq!(state.paid_distributed, 500);
+}
+
+/// distribute_multi_asset with three recipients via DistributionSplit.
+/// Verifies that the primary (residual) recipient and all secondary recipients
+/// receive the correct amounts with no dust left in the contract.
+#[test]
+fn test_distribute_multiple_recipients() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    // Fund the distributor with 1_000 tokens.
+    asset.mint(&distributor_id, &1_000);
+
+    let primary = Address::generate(&env); // residual recipient (index 0)
+    let second = Address::generate(&env); // 30% share
+    let third = Address::generate(&env); // 20% share
+
+    // primary receives 1000 − 300 − 200 = 500 (residual)
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 1_000,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, primary.clone(), second.clone(), third.clone()],
+            shares_bps: soroban_sdk::vec![&env, 5_000u32, 3_000u32, 2_000u32],
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    distributor.distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+
+    // second = 30% of 1000 = 300; third = 20% of 1000 = 200; primary = 500 residual.
+    assert_eq!(token.balance(&second), 300);
+    assert_eq!(token.balance(&third), 200);
+    assert_eq!(token.balance(&primary), 500);
+    // All funds distributed; no dust.
+    assert_eq!(token.balance(&distributor_id), 0);
+}
+
+/// get_admin returns the exact address that was passed to initialize().
+/// Also verifies that a second, separate distributor returns its own admin.
+#[test]
+fn test_get_admin_returns_correct_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    distributor.initialize(&admin);
+
+    let stored = distributor.get_admin();
+    assert_eq!(stored, admin, "get_admin must return the initialised admin");
+
+    // A second, independent distributor with a different admin should return
+    // its own admin, not the first one's.
+    let admin2 = Address::generate(&env);
+    let distributor_id2 = env.register(PaymentDistributor, ());
+    let distributor2 = PaymentDistributorClient::new(&env, &distributor_id2);
+    distributor2.initialize(&admin2);
+
+    assert_eq!(distributor2.get_admin(), admin2);
+    assert_ne!(distributor2.get_admin(), admin);
+}
