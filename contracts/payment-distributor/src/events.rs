@@ -126,3 +126,12 @@ pub fn dust_swept(env: &Env, admin: &Address, token: &Address, to: &Address, amo
     env.events()
         .publish(topics, (admin.clone(), to.clone(), amount));
 }
+
+/// Publish a batch_distributed event after a successful `distribute_batch` call.
+///
+/// `count`  — number of entries processed in this batch.
+/// `total`  — sum of all payment deltas distributed.
+pub fn batch_distributed(env: &Env, count: u32, total: i128) {
+    let topics = (Symbol::new(env, "batch_dist"),);
+    env.events().publish(topics, (count, total));
+}

@@ -40,7 +40,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "i128": "100"
+                  "i128": "1000"
                 }
               ]
             }
@@ -49,6 +49,7 @@
         }
       ]
     ],
+    [],
     []
   ],
   "ledger": {
@@ -183,7 +184,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "100"
+                      "i128": "1000"
                     }
                   },
                   {

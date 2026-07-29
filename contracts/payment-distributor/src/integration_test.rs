@@ -5,7 +5,7 @@ use invoice_escrow::{EscrowStatus, InvoiceEscrow, InvoiceEscrowClient};
 use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger as _},
+    testutils::{Address as _, AuthorizedFunction, Ledger as _},
     Address, BytesN, Env, String as SorobanString, Symbol,
 };
 
@@ -203,42 +203,30 @@ fn test_integration_verify_auth_distribution_invocations() {
     ctx.escrow
         .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
-    // Verify auth records show the correct contract invocations.
+    // The payer authorized `record_payment` on the escrow contract — that's the
+    // only externally-signed auth in this flow. The escrow's subsequent
+    // cross-contract call into the distributor's `distribute_payment` authorizes
+    // itself via its own contract address (`escrow_contract.require_auth()`),
+    // which Soroban satisfies transparently for a contract acting on its own
+    // address mid-execution — it does not produce a separate, independently
+    // observable `env.auths()` entry.
     let auths = env.auths();
-    // At minimum we expect auth entries for the escrow and distributor
-    assert!(
-        auths.len() >= 2,
-        "Expected at least 2 auth invocations, got {}",
+    assert_eq!(
+        auths.len(),
+        1,
+        "Expected exactly 1 top-level auth invocation (payer), got {}",
         auths.len()
     );
 
-    // Verify that the distributor contract was invoked by the escrow.
-    let distributor_invoked = auths.iter().any(|(_, inv)| {
-        if let AuthorizedFunction::Contract((contract, fn_name, _args)) = &inv.function {
-            *contract == ctx.distributor_id
-                && *fn_name == Symbol::new(&env, "distribute_payment")
-        } else {
-            false
+    let (payer_addr, invocation) = &auths[0];
+    assert_eq!(*payer_addr, ctx.payer);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, fn_name, _args)) => {
+            assert_eq!(*contract, ctx.escrow_id);
+            assert_eq!(*fn_name, Symbol::new(&env, "record_payment"));
         }
-    });
-    assert!(
-        distributor_invoked,
-        "distribute_payment was not found in authorized invocations"
-    );
-
-    // Verify escrow contract's record_payment was invoked.
-    let escrow_invoked = auths.iter().any(|(_, inv)| {
-        if let AuthorizedFunction::Contract((contract, fn_name, _args)) = &inv.function {
-            *contract == ctx.escrow_id
-                && *fn_name == Symbol::new(&env, "record_payment")
-        } else {
-            false
-        }
-    });
-    assert!(
-        escrow_invoked,
-        "record_payment was not found in authorized invocations"
-    );
+        other => panic!("expected a contract function invocation, got {other:?}"),
+    }
 }
 
 /// Verify that calling `distribute_payment` with an invalid escrow status
@@ -469,20 +457,13 @@ fn test_integration_refund_distribution_invocation_verified() {
     env.ledger().set_timestamp(10_001);
     ctx.escrow.refund(&ctx.invoice_id);
 
-    // Verify auth records include the distribute_refund invocation.
-    let auths = env.auths();
-    let refund_invoked = auths.iter().any(|(_addr, inv)| {
-        if let AuthorizedFunction::Contract((contract, fn_name, _args)) = &inv.function {
-            *contract == ctx.distributor_id
-                && *fn_name == Symbol::new(&env, "distribute_refund")
-        } else {
-            false
-        }
-    });
-    assert!(
-        refund_invoked,
-        "distribute_refund was not found in authorized invocations"
-    );
+    // `refund` is permissionless (anyone may call it) and the escrow's subsequent
+    // cross-contract call into the distributor's `distribute_refund` authorizes
+    // itself via its own contract address, which Soroban satisfies transparently
+    // without producing an observable `env.auths()` entry — so there is no
+    // external auth invocation to inspect here. The distribution's effect is
+    // verified directly via state below instead.
+    assert!(env.auths().is_empty());
 
     // Verify final state.
     assert_eq!(
