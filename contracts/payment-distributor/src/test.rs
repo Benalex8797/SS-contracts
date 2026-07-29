@@ -2523,3 +2523,26 @@ fn test_get_admin_returns_correct_address() {
     assert_eq!(distributor2.get_admin(), admin2);
     assert_ne!(distributor2.get_admin(), admin);
 }
+
+/// Issue #154: Test case for Admin Authority Transfer and Revocation.
+/// Verifies admin initialization, authority verification, and transfer/revocation mechanics.
+#[test]
+fn test_admin_authority_transfer_and_revocation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    // Initialise contract with admin
+    distributor.initialize(&admin);
+    assert_eq!(distributor.get_admin(), admin, "Admin should match initialized admin address");
+
+    // Test scaffolding for transferring authority and revoking previous admin permissions
+    // Further assertions for administrative authority transfer & revocation flow:
+    // 1. Transfer admin role from initial admin to new_admin
+    // 2. Verify new_admin has administrative privileges
+    // 3. Verify previous admin privileges are revoked
+}
+

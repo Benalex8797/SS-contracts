@@ -3715,3 +3715,57 @@ fn test_initialize_not_authorized() {
     // This should panic because the test environment doesn't provide auth for `admin`
     escrow_client.initialize(&admin, &300);
 }
+
+/// Issue #152: Test case for Duplicate Escrow ID Collision Prevention.
+/// Validates that attempting to create a second escrow with an existing invoice ID
+/// triggers collision prevention and yields an error.
+#[test]
+fn test_duplicate_escrow_id_collision_prevention() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin.clone());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_DUPLICATE");
+
+    // Initial escrow creation
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000i128,
+        &1000i128,
+        &9_999_999u64,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "duplicate_id_test"),
+        &None,
+    );
+
+    // Attempting duplicate creation with identical invoice_id
+    let result = escrow_client.try_create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000i128,
+        &1000i128,
+        &9_999_999u64,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "duplicate_id_test_2"),
+        &None,
+    );
+
+    assert!(result.is_err(), "Duplicate escrow creation with existing ID must fail");
+}
+
