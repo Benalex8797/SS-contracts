@@ -8,6 +8,8 @@
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
   [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://stellar.org)
   [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+  [![CI](https://github.com/StellarState/SS-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/StellarState/SS-contracts/actions)
+  [![Coverage Status](https://img.shields.io/badge/coverage-94%25-brightgreen)](https://github.com/StellarState/SS-contracts)
 </div>
 
 ## 📋 Overview
