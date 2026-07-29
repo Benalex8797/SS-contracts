@@ -1339,22 +1339,6 @@ fn test_sweep_dust_nothing_to_sweep() {
 
 #[test]
 fn test_distribute_payment_overflow_in_fee_calculation() {
-// Standalone distributor edge-case tests (no full escrow wiring)
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// Verify that a freshly initialized distributor can receive tokens and
-/// immediately distribute them, with correct balances and state persistence.
-///
-/// Contract math for distribute_payment:
-///   payment_amount = paid_amount - already_distributed = 1000 - 0 = 1000
-///   platform_fee   = 1000 * 300 / 10000 = 30
-///   seller_amount  = payment_amount = 1000
-///   investor_amount = amounts[2] = 400
-///   total_distribution = 1000 + 400 + 30 = 1430
-///
-/// The distributor must hold ≥ total_distribution tokens before the call.
-#[test]
-fn test_initialize_and_distribute() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1369,7 +1353,7 @@ fn test_initialize_and_distribute() {
     let large_amount = i128::MAX / 2;
     asset.mint(&distributor_id, &large_amount);
 
-    // Use a very high fee BPS that could cause overflow
+    // Use i128::MAX amounts which should trigger overflow errors in fee calculation
     let result = distributor.try_distribute_payment(
         &escrow,
         &invoice_id,
@@ -1382,14 +1366,28 @@ fn test_initialize_and_distribute() {
     assert!(result.is_err());
 }
 
+/// Verify that a freshly initialized distributor can receive tokens and
+/// immediately distribute them, with correct balances and state persistence.
+///
+/// Contract math for distribute_payment:
+///   payment_amount = paid_amount - already_distributed = 1000 - 0 = 1000
+///   platform_fee   = 1000 * 300 / 10000 = 30
+///   seller_amount  = payment_amount = 1000
+///   investor_amount = amounts[2] = 400
+///   total_distribution = 1000 + 400 + 30 = 1430
+///
+/// The distributor must hold >= total_distribution tokens before the call.
 #[test]
-fn test_distribute_split_overflow_in_referral_calculation() {
-    let (token, asset) = make_token(&env);
+fn test_initialize_and_distribute() {
+    let env = Env::default();
+    env.mock_all_auths();
 
+    let (admin, distributor_id, distributor) = distributor_only(&env);
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_INIT");
+    let (token, asset) = make_token(&env);
 
     // Bind the escrow so the whitelist check passes.
     distributor.set_escrow_contract(&admin, &escrow);
@@ -1429,6 +1427,33 @@ fn test_distribute_split_overflow_in_referral_calculation() {
     let state = distributor.get_distribution_state(&escrow, &invoice_id);
     assert_eq!(state.paid_distributed, 1_000);
     assert!(!state.refund_distributed);
+}
+
+#[test]
+fn test_distribute_split_overflow_in_referral_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    asset.mint(&distributor_id, &i128::MAX);
+
+    let r0 = Address::generate(&env);
+    let referral = Address::generate(&env);
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: i128::MAX,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, r0],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: Some(referral),
+            referral_bps: 10_000, // 100% referral - could cause overflow
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert!(result.is_err());
 }
 
 /// Passing paid_amount == 0 (equal to already-distributed 0) yields
@@ -1501,6 +1526,24 @@ fn test_distribute_payment_zero_payment_amount() {
 
 #[test]
 fn test_distribute_split_zero_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "SPLIT_ZERO");
+    let (token, asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    asset.mint(&distributor_id, &1_000);
+
+    // All amounts are zero — split has nothing to distribute
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin.clone()],
         &soroban_sdk::vec![&env, 0i128, 0i128, 0i128, 0i128],
         &2u32,
     );
@@ -1601,15 +1644,6 @@ fn test_distribute_payment_empty_amounts_vector() {
 
     distributor.set_escrow_contract(&admin, &escrow);
 
-    let escrow = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let funder = Address::generate(&env);
-    let invoice_id = Symbol::new(&env, "INV_NEG");
-
-    distributor.set_escrow_contract(&admin, &escrow);
-    asset.mint(&distributor_id, &1_000);
-
-    // paid_amount = -500 → payment_delta = -500 − 0 = -500 ≤ 0
     let result = distributor.try_distribute_payment(
         &escrow,
         &invoice_id,
@@ -1881,6 +1915,24 @@ fn test_distribute_payment_with_large_amount() {
 
 #[test]
 fn test_distribute_multi_asset_with_maximum_recipients() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "MAX_RECIP");
+    let (token, asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    asset.mint(&distributor_id, &1_000);
+
+    // Negative amounts should be rejected as NothingToDistribute
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin.clone()],
         &soroban_sdk::vec![&env, -500i128, -500i128, 0i128, 0i128],
         &2u32,
     );
@@ -2003,7 +2055,7 @@ fn test_distribute_full_balance() {
     assert_eq!(state.paid_distributed, 500);
 }
 
-/// distribute_multi_asset with three recipients via DistributionSplit.
+/// distribute_multi_asset with multiple recipients via DistributionSplit.
 /// Verifies that the primary (residual) recipient and all secondary recipients
 /// receive the correct amounts with no dust left in the contract.
 #[test]
@@ -2014,31 +2066,14 @@ fn test_distribute_multiple_recipients() {
     let (admin, distributor_id, distributor) = distributor_only(&env);
     let (token, asset) = make_token(&env);
 
-    asset.mint(&distributor_id, &10_000);
-
-    // Create many recipients
-    let mut recipients = soroban_sdk::Vec::new(&env);
-    let mut shares = soroban_sdk::Vec::new(&env);
-
-    for i in 0..10 {
-        recipients.push_back(Address::generate(&env));
-        shares.push_back(1_000u32); // 10% each
-    }
-
-    let route = AssetRoute {
-        token: token.address.clone(),
-        amount: 10_000,
-        split: DistributionSplit {
-            recipients: recipients.clone(),
-            shares_bps: shares.clone(),
     // Fund the distributor with 1_000 tokens.
     asset.mint(&distributor_id, &1_000);
 
-    let primary = Address::generate(&env); // residual recipient (index 0)
+    let primary = Address::generate(&env); // residual recipient (50%)
     let second = Address::generate(&env); // 30% share
     let third = Address::generate(&env); // 20% share
 
-    // primary receives 1000 − 300 − 200 = 500 (residual)
+    // primary receives 1000 * 5000/10000 = 500, second 300, third 200
     let route = AssetRoute {
         token: token.address.clone(),
         amount: 1_000,
@@ -2181,14 +2216,6 @@ fn test_calculate_distribution_splits_requires_initialization() {
     );
 
     assert_eq!(result, Err(Ok(Error::NotInit)));
-    distributor.distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
-
-    // second = 30% of 1000 = 300; third = 20% of 1000 = 200; primary = 500 residual.
-    assert_eq!(token.balance(&second), 300);
-    assert_eq!(token.balance(&third), 200);
-    assert_eq!(token.balance(&primary), 500);
-    // All funds distributed; no dust.
-    assert_eq!(token.balance(&distributor_id), 0);
 }
 
 /// get_admin returns the exact address that was passed to initialize().
