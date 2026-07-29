@@ -165,22 +165,28 @@ cargo tarpaulin --out Html
 
 ## 🔒 Security
 
-- Smart contracts audited by [Audit Firm] (pending)
-- Continuous security scanning via GitHub Actions
-- Bug bounty program: [Link] (coming soon)
+- **Audit Status**: Smart contracts audit prep in progress. Formal security audit schedule trackable via [SECURITY.md](SECURITY.md).
+- **Automated Analysis**: Continuous security scanning via GitHub Actions (Cargo Audit, Clippy, Tarpaulin).
+- **Responsible Disclosure**: Please report security vulnerabilities to `security@stellarsettle.com`. See [SECURITY.md](SECURITY.md) for vulnerability disclosure guidelines.
+- **Bug Bounty Program**: Active community bounties managed via GitHub Issues & Opire.
 
 ## 📊 Contract Addresses
 
-> Contract IDs are printed at the end of each `deploy.sh` / `deploy.ps1` run.
-> Update the values below after deploying.
+> Contract IDs are dynamically generated at the end of each `deploy.sh` / `deploy.ps1` execution and persisted to `.env`.
 
 ### Testnet
-- Invoice Escrow: `CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
-- Invoice Token: `CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
-- Payment Distributor: `CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
+Refer to [`.env.example`](.env.example) and your local `.env` configuration generated after running:
+```bash
+# Execute deployment script to generate contract IDs
+bash scripts/deploy.sh
+```
+Contract IDs generated upon deployment:
+- **Invoice Escrow**: `INVOICE_ESCROW_CONTRACT_ID` (see `.env`)
+- **Invoice Token**: `INVOICE_TOKEN_CONTRACT_ID` (see `.env`)
+- **Payment Distributor**: `PAYMENT_DISTRIBUTOR_CONTRACT_ID` (see `.env`)
 
 ### Mainnet
-- Coming soon after audit completion
+- Scheduled after audit completion and formal security sign-off.
 
 ## 🤝 Contributing
 
