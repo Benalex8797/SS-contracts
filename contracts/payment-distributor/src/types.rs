@@ -104,3 +104,37 @@ pub struct DistributionPreview {
     pub platform_fee: i128,
     pub total_distribution: i128,
 }
+
+/// A single entry in a batch payment fanout.
+///
+/// Each entry represents one settled-payment distribution from a single escrow invoice.
+/// The distributor contract must already hold the tokens for every entry before
+/// `distribute_batch` is called.
+///
+/// Field names are kept ≤10 chars to satisfy Soroban's `contracttype` constraint.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchPaymentEntry {
+    /// Escrow contract that authorises this distribution.
+    pub escrow: Address,
+    /// Invoice identifier within the escrow.
+    pub inv_id: soroban_sdk::Symbol,
+    /// Payment token contract.
+    pub token: Address,
+    /// Seller (invoice owner) — receives the face-value portion.
+    pub seller: Address,
+    /// Investor (funder) — receives the investor portion.
+    pub funder: Address,
+    /// Platform admin — receives the fee.
+    pub admin: Address,
+    /// Cumulative paid amount for this invoice (used to detect double-distribution).
+    pub paid_amt: i128,
+    /// Net amount to pay the seller for this settlement call.
+    pub seller_amt: i128,
+    /// Net amount to pay the investor for this settlement call.
+    pub investor_amt: i128,
+    /// Platform fee for this settlement call.
+    pub fee_amt: i128,
+    /// Escrow status after the payment (must be Funded=1 or Settled=2).
+    pub status: u32,
+}
