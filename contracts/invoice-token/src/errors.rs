@@ -13,34 +13,32 @@ pub enum Error {
     NotInit = 2,
     /// Caller is not authorized (e.g. not admin or minter).
     Unauthorized = 3,
+    RoleNotGranted = 4,
     /// Amount is zero or negative.
-    InvalidAmount = 4,
+    InvalidAmount = 5,
     /// Insufficient balance for transfer or burn.
-    InsufficientBalance = 5,
+    InsufficientBalance = 6,
+    InsufficientBalanceForFee = 7,
     /// Insufficient allowance for transfer_from or burn_from.
-    InsufficientAllowance = 6,
+    InsufficientAllowance = 8,
     /// Allowance has expired (expiration_ledger passed).
-    AllowanceExpired = 7,
+    AllowanceExpired = 9,
     /// Transfers are locked (pre-settlement restriction).
-    TransferLocked = 8,
+    TransferLocked = 10,
     /// Arithmetic overflow.
-    Overflow = 9,
+    Overflow = 11,
     /// Approval expiration_ledger must be >= current ledger unless setting amount to 0.
-    InvalidExpiration = 10,
+    InvalidExpiration = 12,
     /// Contract is paused and the requested operation is temporarily disabled.
-    Paused = 11,
+    Paused = 13,
     /// Token decimals exceed the supported sub-asset precision.
-    InvalidDecimals = 12,
+    InvalidDecimals = 14,
     /// Token name or symbol metadata is empty (SEP-41 requires non-empty metadata).
-    InvalidMetadata = 13,
+    InvalidMetadata = 15,
     /// No allowance exists for (from, spender), so its expiration cannot be extended.
-    AllowanceNotFound = 14,
-    /// Balance is sufficient for the transfer amount but not for the fee.
-    InsufficientBalanceForFee = 15,
-    /// mint_batch vectors have mismatched lengths.
-    BatchLengthMismatch = 16,
-    /// Fee basis points value is out of allowed range (0..=10_000).
-    InvalidFeeBps = 17,
-    /// Role has not been granted to anyone, so there is no role admin.
-    RoleNotGranted = 18,
+    AllowanceNotFound = 16,
+    /// Batch length mismatch between addresses and amounts.
+    BatchLengthMismatch = 17,
+    /// Fee basis points exceed maximum.
+    InvalidFeeBps = 18,
 }

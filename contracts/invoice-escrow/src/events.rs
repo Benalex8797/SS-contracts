@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Event definitions for state changes (escrow_created, escrow_funded, payment_settled).
 
 use soroban_sdk::{Address, Env, Symbol};
@@ -87,13 +88,7 @@ pub fn escrow_cancelled(env: &Env, inv_id: Symbol, seller: &Address) {
 }
 
 /// Publish escrow_funded event for a signed off-chain approval, including the consumed nonce.
-pub fn escrow_funded_signed(
-    env: &Env,
-    inv_id: Symbol,
-    buyer: &Address,
-    amount: i128,
-    nonce: u64,
-) {
+pub fn escrow_funded_signed(env: &Env, inv_id: Symbol, buyer: &Address, amount: i128, nonce: u64) {
     env.events().publish(
         (Symbol::new(env, "escrow_fund_sig"),),
         (inv_id, buyer, amount, nonce),

@@ -59,7 +59,9 @@ pub fn has_escrow(env: &soroban_sdk::Env, inv_id: Symbol) -> bool {
 
 /// Remove escrow data for an invoice from persistent storage (storage footprint cleanup).
 pub fn remove_escrow(env: &soroban_sdk::Env, inv_id: Symbol) {
-    env.storage().persistent().remove(&StorageKey::Escrow(inv_id));
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::Escrow(inv_id));
 }
 
 /// Get the highest nonce consumed so far for a buyer's signed off-chain approvals.

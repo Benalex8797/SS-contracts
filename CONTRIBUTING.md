@@ -18,6 +18,7 @@ All active development happens on the `dev` branch. The `main` branch is reserve
    git pull origin dev
    git checkout -b feature/your-feature-name
    ```
+   *Note: Always ensure your feature branch branches off `dev`.*
 3. **Make your changes**, adhering to code style guidelines and writing unit tests.
 4. **Commit using [Conventional Commits](https://www.conventionalcommits.org/)**:
    ```bash

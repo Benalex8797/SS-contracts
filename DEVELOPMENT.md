@@ -74,6 +74,20 @@ This installs a git hook at `.git/hooks/pre-commit` that runs `cargo fmt --all -
 
 ---
 
+## 🧪 Smoke Testing & Testnet Script Execution
+
+To run end-to-end smoke tests against Stellar Testnet:
+
+1. **Configure Environment Variables**: Set `STELLAR_NETWORK=testnet` and export your test account secret key `SECRET_KEY=S...`.
+2. **Execute Deploy Script**: Run `bash scripts/deploy.sh` to compile WASM, deploy contract instances, and register test accounts.
+3. **Execute Smoke Test Recipe**:
+   ```bash
+   # Initialize escrow contract
+   soroban contract invoke --id <ESCROW_ID> --source seller --network testnet -- initialize --admin <ADMIN> --payment_token <TOKEN_ID>
+   ```
+
+---
+
 ## 🌿 Contribution Workflow Reminder
 
 All Pull Requests MUST target the `dev` branch. Direct pushes to `main` or `dev` are prohibited. See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.

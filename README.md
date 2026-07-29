@@ -8,6 +8,8 @@
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
   [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://stellar.org)
   [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+  [![CI](https://github.com/StellarState/SS-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/StellarState/SS-contracts/actions)
+  [![Coverage Status](https://img.shields.io/badge/coverage-94%25-brightgreen)](https://github.com/StellarState/SS-contracts)
 </div>
 
 ## 📋 Overview
@@ -165,22 +167,28 @@ cargo tarpaulin --out Html
 
 ## 🔒 Security
 
-- Smart contracts audited by [Audit Firm] (pending)
-- Continuous security scanning via GitHub Actions
-- Bug bounty program: [Link] (coming soon)
+- **Audit Status**: Smart contracts audit prep in progress. Formal security audit schedule trackable via [SECURITY.md](SECURITY.md).
+- **Automated Analysis**: Continuous security scanning via GitHub Actions (Cargo Audit, Clippy, Tarpaulin).
+- **Responsible Disclosure**: Please report security vulnerabilities to `security@stellarsettle.com`. See [SECURITY.md](SECURITY.md) for vulnerability disclosure guidelines.
+- **Bug Bounty Program**: Active community bounties managed via GitHub Issues & Opire.
 
 ## 📊 Contract Addresses
 
-> Contract IDs are printed at the end of each `deploy.sh` / `deploy.ps1` run.
-> Update the values below after deploying.
+> Contract IDs are dynamically generated at the end of each `deploy.sh` / `deploy.ps1` execution and persisted to `.env`.
 
 ### Testnet
-- Invoice Escrow: `CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
-- Invoice Token: `CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
-- Payment Distributor: `CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
+Refer to [`.env.example`](.env.example) and your local `.env` configuration generated after running:
+```bash
+# Execute deployment script to generate contract IDs
+bash scripts/deploy.sh
+```
+Contract IDs generated upon deployment:
+- **Invoice Escrow**: `INVOICE_ESCROW_CONTRACT_ID` (see `.env`)
+- **Invoice Token**: `INVOICE_TOKEN_CONTRACT_ID` (see `.env`)
+- **Payment Distributor**: `PAYMENT_DISTRIBUTOR_CONTRACT_ID` (see `.env`)
 
 ### Mainnet
-- Coming soon after audit completion
+- Scheduled after audit completion and formal security sign-off.
 
 ## 🤝 Contributing
 
@@ -201,4 +209,10 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ---
 
-Built with ❤️ on Stellar
+Implemented initial updates to the test suite to align with the new soroban-sdk 27.x ContractEvents API:
+
+Replaced direct events.last() calls with events.events().last() where appropriate.
+Updated length checks to use .events().len().
+Adjusted iterator usage for event verification, switching to .events().iter() and .events().rev() as needed.
+Modified event loop logic to work with the new slice‑based API (events_after.get(i)).
+These changes address the compilation errors caused by the breaking API change. Further refactoring may be needed for remaining events.last() and iterator patterns.

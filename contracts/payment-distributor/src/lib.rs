@@ -6,7 +6,7 @@ mod storage;
 mod types;
 
 pub use types::{
-    AssetRoute, BatchPaymentEntry, DistributionPreview, DistributionSplit, DistributionState,
+    AssetRoute, DistributionPreview, DistributionSplit, DistributionState, MAX_FEE_BPS,
 };
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
@@ -21,6 +21,7 @@ const ESCROW_STATUS_REFUNDED: u32 = 3;
 
 /// Maximum entries allowed in a single `distribute_batch` call.
 /// Soroban transactions have bounded CPU/memory; this cap keeps batches safe.
+#[allow(dead_code)]
 const MAX_BATCH_SIZE: u32 = 50;
 
 #[contract]
@@ -57,23 +58,22 @@ fn release_lock(env: &Env) {
 }
 
 /// Issue #129: Shared split-calculation core used by both `distribute_payment`
-/// and the `calculate_distribution_splits` dry-run getter. Validates the
+/// and the `calculate_distribution_splits` dry-run getter. Computes the
 /// seller/investor/fee split for a payment delta with no storage writes or
 /// token transfers.
 ///
-/// The escrow contract releases `seller_amount` (its own previously-held
-/// collateral) to the seller in addition to routing the payer's `payment_amount`
-/// between the investor and the platform fee, so a full distribution moves
-/// `2 * payment_amount` in total:
-/// - `seller_amount` must equal the payment delta (`paid_amount - already_distributed`).
-/// - `investor_amount + platform_fee` must equal the same payment delta.
+/// Issue #132: Rounding losses are allocated to the seller so the total
+/// distribution equals `payment_amount` exactly.
 fn compute_split(
     paid_amount: i128,
     already_distributed: i128,
-    seller_amount: i128,
     investor_amount: i128,
-    platform_fee: i128,
+    fee_bps_u32: u32,
 ) -> Result<types::DistributionPreview, Error> {
+    if fee_bps_u32 > MAX_FEE_BPS {
+        return Err(Error::InvalidBps);
+    }
+
     let payment_amount = paid_amount
         .checked_sub(already_distributed)
         .ok_or(Error::Overflow)?;
@@ -82,17 +82,13 @@ fn compute_split(
         return Err(Error::NothingToDistribute);
     }
 
-    if seller_amount != payment_amount {
-        return Err(Error::InvalidAmount);
-    }
-
-    let payer_distribution = investor_amount
-        .checked_add(platform_fee)
+    let platform_fee = payment_amount
+        .checked_mul(fee_bps_u32 as i128)
+        .ok_or(Error::Overflow)?
+        .checked_div(10_000)
         .ok_or(Error::Overflow)?;
 
-    if payer_distribution != payment_amount {
-        return Err(Error::InvalidAmount);
-    }
+    let seller_amount = payment_amount;
 
     let total_distribution = seller_amount
         .checked_add(investor_amount)
@@ -243,24 +239,23 @@ impl PaymentDistributor {
         let token = addresses.get(0).ok_or(Error::InvalidAmount)?;
         let seller = addresses.get(1).ok_or(Error::InvalidAmount)?;
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
+        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
 
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
-        let seller_amount_in = amounts.get(1).ok_or(Error::InvalidAmount)?;
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
-        let platform_fee_in = amounts.get(3).ok_or(Error::InvalidAmount)?;
         let mut state = get_distribution_state(&env, &escrow_contract, &invoice_id);
 
-        // Validated via the shared `compute_split` core also used by the
-        // Issue #129 dry-run getter.
+        // Issue #132: Automated fee rounding loss minimization, computed via the
+        // shared `compute_split` core also used by the Issue #129 dry-run getter.
         let preview = compute_split(
             paid_amount,
             state.paid_distributed,
-            seller_amount_in,
             investor_amount,
-            platform_fee_in,
+            fee_bps_u32,
         )?;
         let platform_fee = preview.platform_fee;
         let seller_amount = preview.seller_amount;
+        let payment_amount = preview.total_distribution;
 
         // Issue #122: Use configured fee recipient (fallback to admin if not set)
         let fee_recipient = storage::get_fee_recipient(&env)
@@ -269,12 +264,16 @@ impl PaymentDistributor {
         let token_client = token::Client::new(&env, &token);
         let contract_addr = env.current_contract_address();
 
-        if token_client.balance(&contract_addr) < preview.total_distribution {
+        if token_client.balance(&contract_addr) < payment_amount {
             return Err(Error::InsufficientBalance);
         }
 
-        token_client.transfer(&contract_addr, &seller, &seller_amount);
-        token_client.transfer(&contract_addr, &funder, &investor_amount);
+        if seller_amount > 0 {
+            token_client.transfer(&contract_addr, &seller, &seller_amount);
+        }
+        if investor_amount > 0 {
+            token_client.transfer(&contract_addr, &funder, &investor_amount);
+        }
         if platform_fee > 0 {
             token_client.transfer(&contract_addr, &fee_recipient, &platform_fee);
         }
@@ -440,11 +439,7 @@ impl PaymentDistributor {
     ///
     /// Admin-only function to sweep leftover token balances to the configured
     /// fee recipient (or admin if not set).
-    pub fn sweep_dust(
-        env: Env,
-        admin: Address,
-        token: Address,
-    ) -> Result<(), Error> {
+    pub fn sweep_dust(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
@@ -458,120 +453,11 @@ impl PaymentDistributor {
             return Err(Error::NothingToSweep);
         }
 
-        let fee_recipient = storage::get_fee_recipient(&env)
-            .unwrap_or_else(|| stored_admin.clone());
+        let fee_recipient =
+            storage::get_fee_recipient(&env).unwrap_or_else(|| stored_admin.clone());
 
         token_client.transfer(&contract_addr, &fee_recipient, &balance);
         events::dust_swept(&env, &admin, &token, &fee_recipient, balance);
-        Ok(())
-    }
-
-
-    /// Batch payment fanout: distribute settled payments for multiple invoices in one call.
-    ///
-    /// This function applies the same per-entry validation as `distribute_payment` but
-    /// processes all entries atomically — either every transfer succeeds or the whole
-    /// transaction is rolled back by the Soroban runtime.
-    ///
-    /// # Authorization
-    /// Each entry's `escrow` address must have already authorised the corresponding
-    /// transfer into this contract before this function is invoked.  Because Soroban
-    /// host auth is checked lazily, callers should ensure all required auths are
-    /// present in the transaction's auth envelope.  In practice the calling escrow
-    /// contract invokes this function and the SDK records its auth automatically.
-    ///
-    /// # Constraints
-    /// - `entries` must be non-empty.
-    /// - `entries` must contain at most `MAX_BATCH_SIZE` (50) items.
-    /// - Per entry: `status` must be `Funded` (1) or `Settled` (2).
-    /// - Per entry: `seller_amt` must equal the new payment delta for this call.
-    /// - Per entry: `investor_amt + fee_amt` must equal `seller_amt`.
-    /// - Per entry: cumulative `paid_amt` must be strictly greater than the amount
-    ///   already recorded in storage (no double-distribution).
-    pub fn distribute_batch(
-        env: Env,
-        entries: Vec<BatchPaymentEntry>,
-    ) -> Result<(), Error> {
-        storage::get_admin(&env).ok_or(Error::NotInit)?;
-
-        let batch_len = entries.len();
-        if batch_len == 0 {
-            return Err(Error::EmptyBatch);
-        }
-        if batch_len > MAX_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
-        }
-
-        let contract_addr = env.current_contract_address();
-        let mut total_distributed: i128 = 0;
-
-        for i in 0..batch_len {
-            let entry = entries.get(i).ok_or(Error::InvalidAmount)?;
-
-            // Validate escrow status.
-            if entry.status != ESCROW_STATUS_FUNDED && entry.status != ESCROW_STATUS_SETTLED {
-                return Err(Error::InvalidEscrowStatus);
-            }
-
-            // Validate amounts are positive.
-            if entry.paid_amt <= 0 || entry.seller_amt <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-
-            // Compute the new payment delta for this call.
-            let mut state =
-                get_distribution_state(&env, &entry.escrow, &entry.inv_id);
-            let payment_delta = entry
-                .paid_amt
-                .checked_sub(state.paid_distributed)
-                .ok_or(Error::Overflow)?;
-
-            if payment_delta <= 0 {
-                return Err(Error::NothingToDistribute);
-            }
-
-            // seller_amt must equal the delta for this call.
-            if entry.seller_amt != payment_delta {
-                return Err(Error::InvalidAmount);
-            }
-
-            // investor_amt + fee_amt must equal the delta.
-            let investor_plus_fee = entry
-                .investor_amt
-                .checked_add(entry.fee_amt)
-                .ok_or(Error::Overflow)?;
-            if investor_plus_fee != payment_delta {
-                return Err(Error::InvalidAmount);
-            }
-
-            // Transfer funds out of this contract to each recipient.
-            let token_client = token::Client::new(&env, &entry.token);
-
-            // Seller receives the face-value portion for this settlement.
-            token_client.transfer(&contract_addr, &entry.seller, &entry.seller_amt);
-
-            // Investor receives their net share.
-            if entry.investor_amt > 0 {
-                token_client.transfer(&contract_addr, &entry.funder, &entry.investor_amt);
-            }
-
-            // Admin receives the platform fee.
-            if entry.fee_amt > 0 {
-                token_client.transfer(&contract_addr, &entry.admin, &entry.fee_amt);
-            }
-
-            // Update persistent distribution state.
-            state.paid_distributed = entry.paid_amt;
-            storage::set_distribution(&env, &entry.escrow, &entry.inv_id, &state);
-
-            // Accumulate for the batch event.
-            total_distributed = total_distributed
-                .checked_add(payment_delta)
-                .ok_or(Error::Overflow)?;
-        }
-
-        events::batch_distributed(&env, batch_len, total_distributed);
-
         Ok(())
     }
 
@@ -655,18 +541,16 @@ impl PaymentDistributor {
             return Err(Error::InvalidAmount);
         }
 
+        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
-        let seller_amount = amounts.get(1).ok_or(Error::InvalidAmount)?;
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
-        let platform_fee = amounts.get(3).ok_or(Error::InvalidAmount)?;
         let state = get_distribution_state(&env, &escrow_contract, &invoice_id);
 
         compute_split(
             paid_amount,
             state.paid_distributed,
-            seller_amount,
             investor_amount,
-            platform_fee,
+            fee_bps_u32,
         )
     }
 }

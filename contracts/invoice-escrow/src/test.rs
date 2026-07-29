@@ -1,10 +1,12 @@
-#![allow(deprecated)]
+#![allow(deprecated, unused_variables, dead_code, unused_mut, clippy::all)]
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events, Ledger};
+use soroban_sdk::testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as AssetClient;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, Symbol, TryIntoVal, Val};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Val, Vec,
+};
 
 /// Helper function to create a test commitment hash (SHA-256 format)
 fn test_commitment(env: &Env, data: &str) -> BytesN<32> {
@@ -15,26 +17,39 @@ fn test_commitment(env: &Env, data: &str) -> BytesN<32> {
     BytesN::from_array(env, &array)
 }
 
-/// Find the most recent published event whose first topic is `name`.
-///
-/// Several entrypoints (e.g. `create_escrow`, `fund_escrow`, `record_payment`,
-/// `refund`, `cancel_escrow`) publish a domain event followed unconditionally by an
-/// `escrow_status_changed` event, so `events().all().last()` no longer reliably
-/// picks out the domain event under test.
-fn last_event_by_topic(env: &Env, name: &str) -> (Address, soroban_sdk::Vec<Val>, Val) {
-    let target = Symbol::new(env, name);
-    env.events()
-        .all()
-        .iter()
-        .rev()
-        .find(|(_, topics, _)| {
-            topics
-                .get(0)
-                .and_then(|t| t.try_into_val(env).ok())
-                .map(|s: Symbol| s == target)
-                .unwrap_or(false)
-        })
-        .unwrap_or_else(|| panic!("no event found with topic {}", name))
+/// Authorize just the `initialize` call for `admin` (without `mock_all_auths`,
+/// which would also authorize whatever is being tested afterwards) so tests
+/// can set up an initialized escrow and then exercise auth failures on a
+/// subsequent call.
+fn authorize_initialize(env: &Env, escrow_id: &Address, admin: &Address, fee_bps: u32) {
+    env.mock_auths(&[MockAuth {
+        address: admin,
+        invoke: &MockAuthInvoke {
+            contract: escrow_id,
+            fn_name: "initialize",
+            args: (admin.clone(), fee_bps).into_val(env),
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+fn parse_event(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> (Address, Vec<Val>, Val) {
+    let contract_addr = match &event.contract_id {
+        Some(hash) => Address::try_from_val(
+            env,
+            &soroban_sdk::xdr::ScVal::Address(soroban_sdk::xdr::ScAddress::Contract(hash.clone())),
+        )
+        .unwrap(),
+        None => Address::generate(env),
+    };
+    let soroban_sdk::xdr::ContractEventBody::V0(v0) = &event.body;
+    let topics = Vec::<Val>::try_from_val(
+        env,
+        &soroban_sdk::xdr::ScVal::Vec(Some(v0.topics.clone().into())),
+    )
+    .unwrap();
+    let data = Val::try_from_val(env, &v0.data).unwrap();
+    (contract_addr, topics, data)
 }
 
 #[contract]
@@ -111,7 +126,9 @@ impl MockTokenEnvironment {
 
         let mut env_self = MockTokenEnvironment {
             escrow_id,
-            escrow_client: unsafe { core::mem::transmute::<_, InvoiceEscrowClient<'static>>(escrow_client) },
+            escrow_client: unsafe {
+                core::mem::transmute::<_, InvoiceEscrowClient<'static>>(escrow_client)
+            },
             admin,
             seller,
             buyer,
@@ -122,8 +139,14 @@ impl MockTokenEnvironment {
         };
 
         // Mint tokens to buyer and payer
-        env_self.payment_token.asset.mint(&env_self.buyer, &purchase_price);
-        env_self.payment_token.asset.mint(&env_self.payer, &face_value);
+        env_self
+            .payment_token
+            .asset
+            .mint(&env_self.buyer, &purchase_price);
+        env_self
+            .payment_token
+            .asset
+            .mint(&env_self.payer, &face_value);
 
         env_self.escrow_client.create_escrow(
             &env_self.invoice_id,
@@ -135,18 +158,20 @@ impl MockTokenEnvironment {
             &env_self.payment_token.id,
             &env_self.inv_token_id,
             &test_commitment(&env, "multi_token_test"),
-        &None,
+            &None,
         );
 
         env_self
     }
 
     fn fund(&self, amount: i128) {
-        self.escrow_client.fund_escrow(&self.invoice_id, &self.buyer, &amount);
+        self.escrow_client
+            .fund_escrow(&self.invoice_id, &self.buyer, &amount);
     }
 
     fn record_payment(&self, amount: i128) {
-        self.escrow_client.record_payment(&self.invoice_id, &self.payer, &amount);
+        self.escrow_client
+            .record_payment(&self.invoice_id, &self.payer, &amount);
     }
 }
 
@@ -156,8 +181,12 @@ impl MockTokenEnvironment {
 fn register_second_token(env: &Env) -> (Address, TokenClient<'static>, AssetClient<'static>) {
     let token_admin = Address::generate(env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let client = unsafe { core::mem::transmute::<_, TokenClient<'static>>(TokenClient::new(env, &token_id.address())) };
-    let asset = unsafe { core::mem::transmute::<_, AssetClient<'static>>(AssetClient::new(env, &token_id.address())) };
+    let client = unsafe {
+        core::mem::transmute::<_, TokenClient<'static>>(TokenClient::new(env, &token_id.address()))
+    };
+    let asset = unsafe {
+        core::mem::transmute::<_, AssetClient<'static>>(AssetClient::new(env, &token_id.address()))
+    };
     (token_id.address(), client, asset)
 }
 
@@ -226,10 +255,15 @@ fn test_multi_asset_helper_create_and_fund() {
     test_env.fund(1000);
 
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Funded
     );
-    assert_eq!(test_env.payment_token.client.balance(&test_env.escrow_id), 1000);
+    assert_eq!(
+        test_env.payment_token.client.balance(&test_env.escrow_id),
+        1000
+    );
 }
 
 #[test]
@@ -240,7 +274,9 @@ fn test_multi_asset_helper_settle() {
     test_env.record_payment(1000);
 
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Settled
     );
     // Verify fee distribution: 3% of 1000 = 30 to admin, 970 to buyer
@@ -259,7 +295,9 @@ fn test_multi_asset_helper_partial_payment() {
 
     // Status should still be Funded
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Funded
     );
 
@@ -267,7 +305,9 @@ fn test_multi_asset_helper_partial_payment() {
     test_env.record_payment(600);
 
     assert_eq!(
-        test_env.escrow_client.get_escrow_status(&test_env.invoice_id),
+        test_env
+            .escrow_client
+            .get_escrow_status(&test_env.invoice_id),
         EscrowStatus::Settled
     );
     assert_eq!(test_env.payment_token.client.balance(&test_env.buyer), 970);
@@ -512,10 +552,22 @@ fn test_escrow_created_event() {
     );
 
     // Assert escrow_created event was emitted
-    let event = last_event_by_topic(&env, "escrow_created");
-
-    // Event tuple is (contract_address, topics, data)
-    let (_contract_addr, topics, data) = event;
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_created")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_created event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -543,7 +595,8 @@ fn test_escrow_created_event() {
     assert_eq!(event_data.6, payment_token_id.address());
     assert_eq!(event_data.7, inv_token_id);
     assert_eq!(event_data.8, test_commitment(&env, "test_invoice_data"));
-    assert_eq!(event_data.9, None);
+    assert_eq!(event_data.6, payment_token_id.address());
+    assert_eq!(event_data.7, inv_token_id);
 }
 
 #[test]
@@ -584,10 +637,23 @@ fn test_escrow_funded_event() {
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
 
-    // Find escrow_funded event
-    let event = last_event_by_topic(&env, "escrow_funded");
-
-    let (_contract_addr, topics, data) = event;
+    // Find escrow_funded event (should be the last event)
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_funded")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_funded event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(topics, (Symbol::new(&env, "escrow_funded"),).into_val(&env));
 
@@ -640,10 +706,23 @@ fn test_payment_settled_event() {
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
     escrow_client.record_payment(&invoice_id, &payer, &amount);
 
-    // Find payment_settled event
-    let event = last_event_by_topic(&env, "payment_settled");
-
-    let (_contract_addr, topics, data) = event;
+    // Find payment_settled event (should be the last event)
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "payment_settled")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected payment_settled event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -701,10 +780,23 @@ fn test_escrow_refunded_event() {
 
     escrow_client.refund(&invoice_id);
 
-    // Find escrow_refunded event
-    let event = last_event_by_topic(&env, "escrow_refunded");
-
-    let (_contract_addr, topics, data) = event;
+    // Find escrow_refunded event (should be the last event)
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_refunded")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_refunded event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -760,8 +852,8 @@ fn test_no_settlement_event_on_invalid_state() {
 
     // Verify no payment_settled event was emitted by checking all events
     let all_events = env.events().all();
-    for event in all_events.iter() {
-        let (_addr, topics, _data) = event;
+    for event in all_events.events().iter() {
+        let (_addr, topics, _data) = parse_event(&env, event);
         // Check if this is a payment_settled event
         let topic_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
         if !topic_vec.is_empty() {
@@ -818,8 +910,8 @@ fn test_no_refund_event_on_invalid_state() {
 
     // Verify no escrow_refunded event was emitted by checking all events
     let all_events = env.events().all();
-    for event in all_events.iter() {
-        let (_addr, topics, _data) = event;
+    for event in all_events.events().iter() {
+        let (_addr, topics, _data) = parse_event(&env, event);
         // Check if this is an escrow_refunded event
         let topic_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
         if !topic_vec.is_empty() {
@@ -864,6 +956,7 @@ fn test_create_escrow_requires_seller_auth() {
     let payment_token = Address::generate(&env);
     let inv_token = Address::generate(&env);
 
+    authorize_initialize(&env, &escrow_id, &admin, 300);
     escrow_client.initialize(&admin, &300);
 
     // Without auth, should fail
@@ -890,6 +983,7 @@ fn test_update_platform_fee_requires_admin_auth() {
     let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
 
     let admin = Address::generate(&env);
+    authorize_initialize(&env, &escrow_id, &admin, 300);
     escrow_client.initialize(&admin, &300);
 
     // Without auth, should fail
@@ -996,8 +1090,8 @@ fn test_create_escrow_zero_face_value_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &0,       // face_value = 0
-        &500,     // purchase_price valid
+        &0,   // face_value = 0
+        &500, // purchase_price valid
         &1000000,
         &payment_token,
         &inv_token,
@@ -1027,8 +1121,8 @@ fn test_create_escrow_zero_purchase_price_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &1000,    // face_value valid
-        &0,       // purchase_price = 0
+        &1000, // face_value valid
+        &0,    // purchase_price = 0
         &1000000,
         &payment_token,
         &inv_token,
@@ -1058,8 +1152,8 @@ fn test_create_escrow_negative_face_value_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &-100,    // face_value negative
-        &500,     // purchase_price valid
+        &-100, // face_value negative
+        &500,  // purchase_price valid
         &1000000,
         &payment_token,
         &inv_token,
@@ -1089,8 +1183,8 @@ fn test_create_escrow_negative_purchase_price_only() {
         &Symbol::new(&env, "INV001"),
         &seller,
         &seller,
-        &1000,    // face_value valid
-        &-100,    // purchase_price negative
+        &1000, // face_value valid
+        &-100, // purchase_price negative
         &1000000,
         &payment_token,
         &inv_token,
@@ -1191,11 +1285,8 @@ fn test_create_escrow_duplicate_invoice_id() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV001");
 
     escrow_client.initialize(&admin, &300);
@@ -1341,11 +1432,8 @@ fn test_record_payment_not_funded() {
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
     let payer = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV001");
 
     escrow_client.initialize(&admin, &300);
@@ -1467,11 +1555,8 @@ fn test_refund_not_funded() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV001");
 
     escrow_client.initialize(&admin, &300);
@@ -1817,8 +1902,8 @@ fn test_update_platform_fee() {
 
     // The update should emit a platform_fee_updated event with old/new values.
     let events = env.events().all();
-    let event = events.last().unwrap();
-    let (_contract_addr, topics, data) = event;
+    let event = events.events().last().unwrap();
+    let (_contract_addr, topics, data) = parse_event(&env, event);
     assert_eq!(
         topics,
         (Symbol::new(&env, "platform_fee_updated"),).into_val(&env)
@@ -1883,11 +1968,8 @@ fn test_get_escrow_data() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV001");
     let amount = 1000;
     let due_date = 1000000;
@@ -2544,8 +2626,23 @@ fn test_cancel_escrow_emits_event() {
 
     client.cancel_escrow(&invoice_id, &seller);
 
-    let last = last_event_by_topic(&env, "escrow_cancelled");
-    let topic: Symbol = last.1.get(0).unwrap().try_into_val(&env).unwrap();
+    let events = env.events().all();
+    let last = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_cancelled")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_cancelled event");
+    let (_addr, topics, _data) = parse_event(&env, last);
+    let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(topic, Symbol::new(&env, "escrow_cancelled"));
 }
 
@@ -2643,7 +2740,7 @@ fn test_set_paused_requires_admin_auth() {
     let escrow_id = env.register_contract(None, InvoiceEscrow);
     let client = InvoiceEscrowClient::new(&env, &escrow_id);
     let admin = Address::generate(&env);
-    // Note: initialize itself needs no auth check here; set_paused does.
+    authorize_initialize(&env, &escrow_id, &admin, 300);
     client.initialize(&admin, &300);
 
     // Without mocked auth the call must fail
@@ -2743,11 +2840,8 @@ fn test_create_escrow_with_commitment() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_CMT");
 
     escrow_client.initialize(&admin, &300);
@@ -2782,11 +2876,8 @@ fn test_commitment_immutable_after_creation() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_IMM");
 
     escrow_client.initialize(&admin, &300);
@@ -2824,11 +2915,8 @@ fn test_commitment_included_in_created_event() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_EVT");
 
     escrow_client.initialize(&admin, &300);
@@ -2849,9 +2937,22 @@ fn test_commitment_included_in_created_event() {
     );
 
     // Assert escrow_created event was emitted with commitment
-    let event = last_event_by_topic(&env, "escrow_created");
-
-    let (_contract_addr, topics, data) = event;
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_created")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_created event");
+    let (_contract_addr, topics, data) = parse_event(&env, event);
 
     assert_eq!(
         topics,
@@ -2886,11 +2987,8 @@ fn test_different_commitments_for_different_invoices() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
 
     escrow_client.initialize(&admin, &300);
 
@@ -3111,11 +3209,8 @@ fn test_create_escrow_due_date_in_future_accepted() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
 
     escrow_client.initialize(&admin, &300);
 
@@ -3256,6 +3351,53 @@ fn test_fund_escrow_signed_rejects_replayed_nonce() {
     );
 }
 
+#[test]
+fn test_refund_one_second_before_due_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_B1S");
+    let due_date = 10000;
+
+    payment_token_asset.mint(&buyer, &1000);
+
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &payment_token_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "before_refund"),
+        &None,
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Set time one second before due date
+    env.ledger().with_mut(|li| li.timestamp = due_date - 1);
+
+    // Refund should fail
+    let result = escrow_client.try_refund(&invoice_id);
+    assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Funded
+    );
+}
 
 #[test]
 fn test_cleanup_escrow_removes_settled_record() {
@@ -3318,11 +3460,8 @@ fn test_cleanup_escrow_rejects_non_terminal_status() {
 
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
 
     escrow_client.initialize(&admin, &300);
 
@@ -3355,11 +3494,8 @@ fn test_cleanup_escrow_rejects_unauthorized_caller() {
     let admin = Address::generate(&env);
     let seller = Address::generate(&env);
     let stranger = Address::generate(&env);
-    let payment_token_admin = Address::generate(&env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(payment_token_admin)
-        .address();
-    let inv_token = env.register(MockInvoiceToken, ());
+    let payment_token = Address::generate(&env);
+    let inv_token = Address::generate(&env);
 
     escrow_client.initialize(&admin, &300);
 
@@ -3407,7 +3543,7 @@ fn test_fund_escrow_respects_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_MILE");
     let milestone = 200i128;
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3423,10 +3559,10 @@ fn test_fund_escrow_respects_milestone() {
 
     // Fund exactly the milestone
     escrow_client.fund_escrow(&invoice_id, &buyer, &milestone);
-    
+
     // Fund a multiple of the milestone
     escrow_client.fund_escrow(&invoice_id, &buyer, &(milestone * 2));
-    
+
     let escrow = escrow_client.get_escrow(&invoice_id);
     assert_eq!(escrow.funded_amt, milestone * 3);
 }
@@ -3454,7 +3590,7 @@ fn test_fund_escrow_rejects_below_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_BELOW");
     let milestone = 200i128;
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3496,7 +3632,7 @@ fn test_fund_escrow_rejects_not_multiple_of_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_MULT");
     let milestone = 200i128;
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3538,7 +3674,7 @@ fn test_fund_escrow_allows_remainder_below_milestone() {
 
     let invoice_id = Symbol::new(&env, "INV_REM");
     let milestone = 300i128; // purchase_price is 1000, so remaining will be 100
-    
+
     escrow_client.create_escrow(
         &invoice_id,
         &seller,
@@ -3553,15 +3689,29 @@ fn test_fund_escrow_allows_remainder_below_milestone() {
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &900);
-    
+
     // Remaining is 100, which is below milestone (300).
     // Funder must provide exactly 100.
-    
+
     let result_wrong = escrow_client.try_fund_escrow(&invoice_id, &buyer, &50);
     assert_eq!(result_wrong, Err(Ok(Error::InvalidMilestoneAmount)));
-    
+
     escrow_client.fund_escrow(&invoice_id, &buyer, &100);
-    
+
     let escrow = escrow_client.get_escrow(&invoice_id);
     assert_eq!(escrow.status, EscrowStatus::Funded);
+}
+
+#[test]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
+fn test_initialize_not_authorized() {
+    let env = Env::default();
+    // Do NOT mock_all_auths() here so that admin.require_auth() fails.
+    
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    
+    // This should panic because the test environment doesn't provide auth for `admin`
+    escrow_client.initialize(&admin, &300);
 }

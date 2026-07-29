@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use soroban_sdk::{Address, Env, Symbol, Vec};
 
 pub fn initialized(env: &Env, admin: &Address) {
@@ -107,20 +109,19 @@ pub fn emergency_withdrawal(
 }
 
 /// Issue #182: Role grant/revoke event.
+#[allow(dead_code)]
 pub fn role_grant_updated(env: &Env, role: &Symbol, account: &Address, granted: bool) {
-    let topics = (Symbol::new(env, "role_grant_updated"), role.clone(), account.clone());
+    let topics = (
+        Symbol::new(env, "role_grant_updated"),
+        role.clone(),
+        account.clone(),
+    );
     env.events().publish(topics, granted);
 }
 
 /// Issue #119: Dust amount swept event.
 /// Topics: (DustSwept, token); Data: (admin, to, amount).
-pub fn dust_swept(
-    env: &Env,
-    admin: &Address,
-    token: &Address,
-    to: &Address,
-    amount: i128,
-) {
+pub fn dust_swept(env: &Env, admin: &Address, token: &Address, to: &Address, amount: i128) {
     let topics = (Symbol::new(env, "DustSwept"), token.clone());
     env.events()
         .publish(topics, (admin.clone(), to.clone(), amount));

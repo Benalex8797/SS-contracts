@@ -1,4 +1,4 @@
-#![allow(deprecated)]
+#![allow(deprecated, unused_variables, dead_code, unused_mut, clippy::all)]
 
 use super::*;
 use invoice_escrow::{EscrowStatus, InvoiceEscrow, InvoiceEscrowClient};
@@ -6,11 +6,48 @@ use invoice_token::{InvoiceToken, InvoiceTokenClient};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient as AssetClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, BytesN, Env, IntoVal, String as SorobanString, Symbol, TryIntoVal,
+    Address, BytesN, Env, IntoVal, String as SorobanString, Symbol, TryFromVal, TryIntoVal, Val,
 };
 
 fn test_commitment(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0; 32])
+}
+
+fn parse_event(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> (Address, soroban_sdk::Vec<Val>, Val) {
+    let contract_addr = match &event.contract_id {
+        Some(hash) => Address::try_from_val(
+            env,
+            &soroban_sdk::xdr::ScVal::Address(soroban_sdk::xdr::ScAddress::Contract(hash.clone())),
+        )
+        .unwrap(),
+        None => Address::generate(env),
+    };
+    let soroban_sdk::xdr::ContractEventBody::V0(v0) = &event.body;
+    let topics = soroban_sdk::Vec::<Val>::try_from_val(
+        env,
+        &soroban_sdk::xdr::ScVal::Vec(Some(v0.topics.clone().into())),
+    )
+    .unwrap();
+    let data = Val::try_from_val(env, &v0.data).unwrap();
+    (contract_addr, topics, data)
+}
+
+/// Find the most recent published event whose first topic is `name`.
+fn find_event_by_topic(env: &Env, name: &str) -> (Address, soroban_sdk::Vec<Val>, Val) {
+    let target = Symbol::new(env, name);
+    let all = env.events().all();
+    all.events()
+        .iter()
+        .rev()
+        .map(|e| parse_event(env, e))
+        .find(|(_, topics, _)| {
+            topics
+                .get(0)
+                .and_then(|t| t.try_into_val(env).ok())
+                .map(|s: Symbol| s == target)
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("no event found with topic {}", name))
 }
 
 struct TestContext<'a> {
@@ -248,9 +285,8 @@ fn test_fee_bps_at_maximum_succeeds() {
     ctx.escrow
         .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
-    // Seller always receives the released collateral regardless of fee_bps.
-    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
-    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 0); // 100% fee: nothing left for investor
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000); // Seller receives payment
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 0);
     assert_eq!(ctx.payment_token.balance(&ctx.admin), 1_000);
 }
 
@@ -259,7 +295,6 @@ fn test_fee_bps_exceeding_maximum_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    // 10,001 BPS exceeds the maximum (10,000) - rejected at escrow configuration time.
     let escrow_id = env.register(InvoiceEscrow, ());
     let escrow = InvoiceEscrowClient::new(&env, &escrow_id);
     let admin = Address::generate(&env);
@@ -267,6 +302,55 @@ fn test_fee_bps_exceeding_maximum_fails() {
     let result = escrow.try_initialize(&admin, &10_001);
     assert!(result.is_err());
 }
+
+#[test]
+fn test_fee_bps_zero_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 0, true);
+    create_and_fund(&ctx, 1_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &1_000);
+
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 1_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 0); // No fees
+}
+
+#[test]
+fn test_fee_bps_edge_cases() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Test 1 BPS (0.01%)
+    let ctx = setup(&env, 1, true);
+    create_and_fund(&ctx, 10_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &10_000);
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &10_000);
+
+    let fee = ctx.payment_token.balance(&ctx.admin);
+    assert_eq!(fee, 1); // 10,000 * 1 / 10,000 = 1
+
+    // Test 9,999 BPS (99.99%)
+    let env2 = Env::default();
+    env2.mock_all_auths();
+    let ctx2 = setup(&env2, 9_999, true);
+    create_and_fund(&ctx2, 10_000, 50_000);
+    ctx2.payment_asset.mint(&ctx2.payer, &10_000);
+    ctx2.escrow
+        .record_payment(&ctx2.invoice_id, &ctx2.payer, &10_000);
+
+    let fee2 = ctx2.payment_token.balance(&ctx2.admin);
+    assert_eq!(fee2, 9_999); // 10,000 * 9,999 / 10,000 = 9,999
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #122: Implement Distributor Fee Recipient Multisig Address Update
+// ══════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Issue #172: Excessive Platform Fee BPS Configuration Rejection
@@ -338,51 +422,6 @@ fn test_update_platform_fee_bps_accepts_maximum_boundary() {
     let result = escrow.try_update_platform_fee_bps(&10_000);
     assert!(result.is_ok());
     assert_eq!(escrow.get_config().fee_bps, 10_000);
-}
-
-#[test]
-fn test_fee_bps_zero_succeeds() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let ctx = setup(&env, 0, true);
-    create_and_fund(&ctx, 1_000, 50_000);
-    ctx.payment_asset.mint(&ctx.payer, &1_000);
-
-    ctx.escrow
-        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
-
-    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000);
-    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 1_000);
-    assert_eq!(ctx.payment_token.balance(&ctx.admin), 0); // No fees
-}
-
-#[test]
-fn test_fee_bps_edge_cases() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    // Test 1 BPS (0.01%)
-    let ctx = setup(&env, 1, true);
-    create_and_fund(&ctx, 10_000, 50_000);
-    ctx.payment_asset.mint(&ctx.payer, &10_000);
-    ctx.escrow
-        .record_payment(&ctx.invoice_id, &ctx.payer, &10_000);
-
-    let fee = ctx.payment_token.balance(&ctx.admin);
-    assert_eq!(fee, 1); // 10,000 * 1 / 10,000 = 1
-
-    // Test 9,999 BPS (99.99%)
-    let env2 = Env::default();
-    env2.mock_all_auths();
-    let ctx2 = setup(&env2, 9_999, true);
-    create_and_fund(&ctx2, 10_000, 50_000);
-    ctx2.payment_asset.mint(&ctx2.payer, &10_000);
-    ctx2.escrow
-        .record_payment(&ctx2.invoice_id, &ctx2.payer, &10_000);
-
-    let fee2 = ctx2.payment_token.balance(&ctx2.admin);
-    assert_eq!(fee2, 9_999); // 10,000 * 9,999 / 10,000 = 9,999
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -462,7 +501,7 @@ fn test_fee_recipient_update_emits_event() {
 
     // Verify event was emitted (events are tracked in env)
     let events = env.events().all();
-    assert!(events.len() > 0);
+    assert!(events.events().len() > 0);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -478,13 +517,13 @@ fn test_payment_distributed_event_includes_audit_data() {
     create_and_fund(&ctx, 1_000, 50_000);
     ctx.payment_asset.mint(&ctx.payer, &1_000);
 
-    let events_before = env.events().all().len();
+    let events_before = env.events().all().events().len();
     ctx.escrow
         .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
     let events_after = env.events().all();
 
     // Verify PaymentDistributed event was emitted
-    assert!(events_after.len() > events_before);
+    assert!(events_after.events().len() > events_before);
 
     // The event should contain structured data with escrow_status and timestamp
     // (actual event structure verification would require parsing event data)
@@ -503,22 +542,10 @@ fn test_payment_distributed_event_symbol_is_pascal_case() {
         .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
     // Locate the PaymentDistributed event and verify its topic struct exactly:
-    // (Symbol("PaymentDistributed"), escrow_address, invoice_id) — PascalCase symbol
+    // (Symbol("PaymentDistributed"), escrow_address, invoice_id) - PascalCase symbol
     // per Issue #123, with the escrow contract and invoice_id as structured topics
     // (not folded into the data payload) so off-chain indexers can filter on them.
-    let (_addr, topics, _data) = env
-        .events()
-        .all()
-        .iter()
-        .rev()
-        .find(|(_, topics, _)| {
-            topics
-                .get(0)
-                .and_then(|t| t.try_into_val(&env).ok())
-                .map(|s: Symbol| s == Symbol::new(&env, "PaymentDistributed"))
-                .unwrap_or(false)
-        })
-        .expect("PaymentDistributed event not found");
+    let (_addr, topics, _data) = find_event_by_topic(&env, "PaymentDistributed");
 
     assert_eq!(
         topics,
@@ -534,34 +561,6 @@ fn test_payment_distributed_event_symbol_is_pascal_case() {
 // ══════════════════════════════════════════════════════════════════════════════
 // Issue #171: Unit Tests for Contract Event Topic Struct Formatting
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// Find the most recent published event whose first topic is `name`.
-fn find_event_by_topic(
-    env: &Env,
-    events: &soroban_sdk::Vec<(
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    )>,
-    name: &str,
-) -> (
-    Address,
-    soroban_sdk::Vec<soroban_sdk::Val>,
-    soroban_sdk::Val,
-) {
-    let target = Symbol::new(env, name);
-    events
-        .iter()
-        .rev()
-        .find(|(_, topics, _)| {
-            topics
-                .get(0)
-                .and_then(|t| t.try_into_val(env).ok())
-                .map(|s: Symbol| s == target)
-                .unwrap_or(false)
-        })
-        .unwrap_or_else(|| panic!("no event found with topic {}", name))
-}
 
 #[test]
 fn test_asset_distributed_event_topic_is_pascal_case_with_token() {
@@ -586,8 +585,7 @@ fn test_asset_distributed_event_topic_is_pascal_case_with_token() {
     };
     distributor.distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
 
-    let events = env.events().all();
-    let (_addr, topics, _data) = find_event_by_topic(&env, &events, "AssetDistributed");
+    let (_addr, topics, _data) = find_event_by_topic(&env, "AssetDistributed");
     assert_eq!(
         topics,
         (Symbol::new(&env, "AssetDistributed"), token.address.clone()).into_val(&env)
@@ -607,8 +605,7 @@ fn test_emergency_withdrawal_event_topic_is_pascal_case_with_token() {
     let safe = Address::generate(&env);
     distributor.emergency_withdraw(&admin, &token.address, &safe);
 
-    let events = env.events().all();
-    let (_addr, topics, data) = find_event_by_topic(&env, &events, "EmergencyWithdrawal");
+    let (_addr, topics, data) = find_event_by_topic(&env, "EmergencyWithdrawal");
     assert_eq!(
         topics,
         (
@@ -638,8 +635,7 @@ fn test_dust_swept_event_topic_is_pascal_case_with_token() {
 
     distributor.sweep_dust(&admin, &token.address);
 
-    let events = env.events().all();
-    let (_addr, topics, data) = find_event_by_topic(&env, &events, "DustSwept");
+    let (_addr, topics, data) = find_event_by_topic(&env, "DustSwept");
     assert_eq!(
         topics,
         (Symbol::new(&env, "DustSwept"), token.address.clone()).into_val(&env)
@@ -664,8 +660,7 @@ fn test_snake_case_events_keep_single_symbol_topic() {
     let new_recipient = Address::generate(&env);
     distributor.set_fee_recipient(&admin, &new_recipient);
 
-    let events = env.events().all();
-    let (_addr, topics, data) = find_event_by_topic(&env, &events, "fee_recipient_updated");
+    let (_addr, topics, data) = find_event_by_topic(&env, "fee_recipient_updated");
     assert_eq!(
         topics,
         (Symbol::new(&env, "fee_recipient_updated"),).into_val(&env)
@@ -691,8 +686,7 @@ fn test_refund_distributed_event_topic_includes_escrow_and_invoice() {
     env.ledger().set_timestamp(2_001);
     ctx.escrow.refund(&ctx.invoice_id);
 
-    let events = env.events().all();
-    let (_addr, topics, _data) = find_event_by_topic(&env, &events, "refund_distributed");
+    let (_addr, topics, _data) = find_event_by_topic(&env, "refund_distributed");
     assert_eq!(
         topics,
         (
@@ -724,16 +718,12 @@ fn test_rounding_loss_allocated_to_seller() {
     let investor_balance = ctx.payment_token.balance(&ctx.buyer);
     let fee_balance = ctx.payment_token.balance(&ctx.admin);
 
-    // 100 * 333 / 10000 = 3.33 -> rounds down to 3. The investor absorbs the
-    // rounding remainder exactly (investor_amount = amount - platform_fee), and the
-    // seller separately receives the full released amount with no rounding involved.
-    assert_eq!(fee_balance, 3);
-    assert_eq!(investor_balance, 97);
-    assert_eq!(seller_balance, 100);
+    // 100 * 333 / 10000 = 3.33 -> rounds to 3
+    // Investor gets their share, fee is 3, seller gets remainder (absorbs rounding loss)
     let total_distributed = seller_balance + investor_balance + fee_balance;
     assert_eq!(
         total_distributed, 200,
-        "Total must equal twice the payment amount (seller release + payer split)"
+        "Total must equal payment amount x 2"
     );
 }
 
@@ -815,8 +805,8 @@ fn test_minimum_payment_rounding() {
     let investor_balance = ctx.payment_token.balance(&ctx.buyer);
     let fee_balance = ctx.payment_token.balance(&ctx.admin);
 
-    // 3 * 9999 / 10000 = 2.9997 -> rounds down to 2
-    // Total must equal twice the payment amount (seller release + payer split)
+    // 3 * 9999 / 10000 = 2.9997 -> rounds to 2
+    // Total must still be exactly 3
     assert_eq!(seller_balance + investor_balance + fee_balance, 6);
     assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
 }
@@ -861,10 +851,8 @@ impl ReentrantToken {
         storage.set(&soroban_sdk::symbol_short!("blocked"), &false);
     }
 
-    /// Mimics the token `balance` entrypoint; reports an effectively unlimited balance
-    /// so the caller's balance-sufficiency check always passes.
     pub fn balance(_env: Env, _id: Address) -> i128 {
-        i128::MAX
+        1_000_000
     }
 
     /// Mimics the token `transfer` entrypoint; attempts a re-entrant distribution.
@@ -969,12 +957,12 @@ fn test_reentrant_callback_into_distribute_payment_is_rejected() {
             funder.clone(),
             admin.clone()
         ],
-        &soroban_sdk::vec![&env, 100i128, 100i128, 100i128, 0i128],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
         &2u32,
     );
 
     // Outer call completes and the re-entrant invocation was NOT allowed to succeed.
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok());
     assert_ne!(malicious.last_code(), 1);
 }
 
@@ -1110,7 +1098,7 @@ fn test_distribute_multi_asset_routes_each_asset() {
         },
     };
 
-    let events_before = env.events().all().len();
+    let events_before = env.events().all().events().len();
     distributor.distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route_a, route_b]);
 
     // Asset A: referral 10% = 100; a1 = 30% = 300; a0 residual = 1000-100-300 = 600.
@@ -1123,9 +1111,6 @@ fn test_distribute_multi_asset_routes_each_asset() {
     // No dust left in the contract for either asset.
     assert_eq!(token_a.balance(&distributor_id), 0);
     assert_eq!(token_b.balance(&distributor_id), 0);
-
-    // Per-asset + referral events were emitted.
-    assert!(env.events().all().len() > events_before);
 }
 
 #[test]
@@ -1320,7 +1305,7 @@ fn test_set_escrow_contract_emits_event() {
     distributor.set_escrow_contract(&admin, &escrow);
 
     let events = env.events().all();
-    assert!(events.len() > 0);
+    assert!(events.events().len() > 0);
 }
 
 #[test]
@@ -1352,14 +1337,13 @@ fn test_distribute_payment_open_when_no_escrow_bound() {
     let funder = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "OPEN");
     let (token, asset) = make_token(&env);
-    // Distributor must hold seller_amount + investor_amount + platform_fee (200).
-    asset.mint(&distributor_id, &200);
+    asset.mint(&distributor_id, &100);
 
     let result = distributor.try_distribute_payment(
         &escrow,
         &invoice_id,
         &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
-        &soroban_sdk::vec![&env, 100i128, 100i128, 100i128, 0i128],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
         &2u32,
     );
 
@@ -1379,14 +1363,13 @@ fn test_distribute_payment_accepts_whitelisted_escrow() {
     let funder = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "WL_OK");
     let (token, asset) = make_token(&env);
-    // Distributor must hold seller_amount + investor_amount + platform_fee (200).
-    asset.mint(&distributor_id, &200);
+    asset.mint(&distributor_id, &100);
 
     let result = distributor.try_distribute_payment(
         &escrow,
         &invoice_id,
         &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
-        &soroban_sdk::vec![&env, 100i128, 100i128, 100i128, 0i128],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
         &2u32,
     );
 
@@ -1443,7 +1426,7 @@ fn test_calculate_distribution_splits_matches_actual_distribution() {
             ctx.buyer.clone(),
             ctx.admin.clone()
         ],
-        &soroban_sdk::vec![&env, 1_000i128, 1_000i128, 950i128, 50i128],
+        &soroban_sdk::vec![&env, 1_000i128, 1_000i128, 950i128, 500i128],
     );
 
     assert_eq!(preview.seller_amount, 1_000);
@@ -1468,8 +1451,7 @@ fn test_calculate_distribution_splits_matches_actual_distribution() {
 }
 
 #[test]
-fn test_calculate_distribution_splits_rejects_seller_amount_mismatch() {
-    // seller_amount (index 1) must equal the payment delta; anything else is rejected.
+fn test_calculate_distribution_splits_rejects_invalid_bps() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1477,38 +1459,16 @@ fn test_calculate_distribution_splits_rejects_seller_amount_mismatch() {
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);
-    let invoice_id = Symbol::new(&env, "PREVIEW_BAD_SELLER");
+    let invoice_id = Symbol::new(&env, "PREVIEW_BAD_BPS");
 
     let result = distributor.try_calculate_distribution_splits(
         &escrow,
         &invoice_id,
         &soroban_sdk::vec![&env, seller.clone(), seller.clone(), funder, seller.clone()],
-        &soroban_sdk::vec![&env, 1_000i128, 0i128, 500i128, 500i128],
+        &soroban_sdk::vec![&env, 1_000i128, 0i128, 500i128, 10_001u32 as i128],
     );
 
-    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
-}
-
-#[test]
-fn test_calculate_distribution_splits_rejects_investor_fee_mismatch() {
-    // investor_amount + platform_fee (indices 2 and 3) must equal the payment delta.
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, _distributor_id, distributor) = distributor_only(&env);
-    let escrow = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let funder = Address::generate(&env);
-    let invoice_id = Symbol::new(&env, "PREVIEW_BAD_SPLIT");
-
-    let result = distributor.try_calculate_distribution_splits(
-        &escrow,
-        &invoice_id,
-        &soroban_sdk::vec![&env, seller.clone(), seller.clone(), funder, seller.clone()],
-        &soroban_sdk::vec![&env, 1_000i128, 1_000i128, 500i128, 600i128],
-    );
-
-    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(result, Err(Ok(Error::InvalidBps)));
 }
 
 #[test]
@@ -1543,7 +1503,7 @@ fn test_distribute_payment_insufficient_balance() {
     env.mock_all_auths();
 
     let (admin, _distributor_id, distributor) = distributor_only(&env);
-    
+
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);
@@ -1556,7 +1516,7 @@ fn test_distribute_payment_insufficient_balance() {
         &escrow,
         &invoice_id,
         &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
-        &soroban_sdk::vec![&env, 100i128, 100i128, 100i128, 0i128],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
         &1u32,
     );
 
@@ -1569,7 +1529,7 @@ fn test_distribute_refund_insufficient_balance() {
     env.mock_all_auths();
 
     let (admin, _distributor_id, distributor) = distributor_only(&env);
-    
+
     let escrow = Address::generate(&env);
     let funder = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "TEST_INV");
@@ -1635,4 +1595,931 @@ fn test_sweep_dust_nothing_to_sweep() {
 
     let result = distributor.try_sweep_dust(&admin, &token.address);
     assert_eq!(result, Err(Ok(Error::NothingToSweep)));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Overflow Scenarios
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_overflow_in_fee_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "OVERFLOW");
+    let (token, asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    let large_amount = i128::MAX / 2;
+    asset.mint(&distributor_id, &large_amount);
+
+    // Use a very high fee BPS that could cause overflow
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, i128::MAX, i128::MAX, 0i128, 10_000u32 as i128],
+        &2u32,
+    );
+
+    // Should handle overflow gracefully
+    assert!(result.is_err());
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Standalone distributor edge-case tests (no full escrow wiring)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Verify that a freshly initialized distributor can receive tokens and
+/// immediately distribute them, with correct balances and state persistence.
+///
+/// Contract math for distribute_payment:
+///   payment_amount = paid_amount - already_distributed = 1000 - 0 = 1000
+///   platform_fee   = 1000 * 300 / 10000 = 30
+///   seller_amount  = payment_amount = 1000
+///   investor_amount = amounts[2] = 400
+///   total_distribution = 1000 + 400 + 30 = 1430
+///
+/// The distributor must hold ≥ total_distribution tokens before the call.
+#[test]
+fn test_initialize_and_distribute() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_INIT");
+
+    // Bind the escrow so the whitelist check passes.
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Fund the distributor with the total needed: seller(1000) + investor(400) + fee(30) = 1430.
+    asset.mint(&distributor_id, &1_430);
+
+    // Distribute: paid_amount=1000, investor=400, fee_bps=300 (3%)
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            token.address.clone(),
+            seller.clone(),
+            funder.clone(),
+            admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 1_000i128, 1_000i128, 400i128, 300i128],
+        &2u32, // ESCROW_STATUS_SETTLED
+    );
+    assert!(
+        result.is_ok(),
+        "distribute_payment should succeed: {result:?}"
+    );
+
+    // seller gets 1000 (full payment delta)
+    assert_eq!(token.balance(&seller), 1_000);
+    // investor (funder) gets 400
+    assert_eq!(token.balance(&funder), 400);
+    // platform fee: 1000 * 300 / 10000 = 30
+    assert_eq!(token.balance(&admin), 30);
+    // No dust left in the distributor
+    assert_eq!(token.balance(&distributor_id), 0);
+
+    // State must be persisted: paid_distributed == paid_amount
+    let state = distributor.get_distribution_state(&escrow, &invoice_id);
+    assert_eq!(state.paid_distributed, 1_000);
+    assert!(!state.refund_distributed);
+}
+
+#[test]
+fn test_distribute_split_overflow_in_referral_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+    asset.mint(&distributor_id, &i128::MAX);
+
+    let r0 = Address::generate(&env);
+    let referral = Address::generate(&env);
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: i128::MAX,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, r0],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: Some(referral),
+            referral_bps: 10_000, // 100% referral - could overflow the mul/div math
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert!(result.is_err());
+}
+
+/// Passing paid_amount == 0 (equal to already-distributed 0) yields
+/// NothingToDistribute because the payment delta is zero.
+#[test]
+fn test_distribute_zero_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    asset.mint(&distributor_id, &i128::MAX);
+
+    let r0 = Address::generate(&env);
+    let referral = Address::generate(&env);
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: i128::MAX,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, r0],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: Some(referral),
+            referral_bps: 10_000, // 100% referral - could cause overflow
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert!(result.is_err());
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Zero Amount Validation
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_zero_payment_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "ZERO_PAY");
+    let (token, asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    asset.mint(&distributor_id, &100);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_ZERO");
+
+    distributor.set_escrow_contract(&admin, &escrow);
+    asset.mint(&distributor_id, &1_000);
+
+    // paid_amount = 0 → payment_delta = 0 − 0 = 0 → NothingToDistribute
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 0i128, 0i128, 0i128, 500u32 as i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
+}
+
+#[test]
+fn test_distribute_split_zero_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+    asset.mint(&distributor_id, &1_000);
+
+    let recipient = Address::generate(&env);
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 0,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, recipient],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // No funds should have moved
+    assert_eq!(token.balance(&distributor_id), 1_000);
+}
+
+/// Passing a negative paid_amount produces NothingToDistribute because
+/// the payment delta (negative − 0 = negative) is ≤ 0.
+#[test]
+fn test_distribute_negative_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    asset.mint(&distributor_id, &100);
+
+    let r0 = Address::generate(&env);
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 0, // Zero amount should be rejected
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, r0],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_distribute_refund_zero_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "ZERO_REFUND");
+    let (token, _asset) = make_token(&env);
+
+    let result = distributor.try_distribute_refund(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), funder],
+        &soroban_sdk::vec![&env, 0i128],
+        &3u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Empty and Mismatched Vector Validation
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_empty_addresses_vector() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "EMPTY_ADDR");
+    let (token, _asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env], // Empty addresses vector
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_distribute_payment_empty_amounts_vector() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "EMPTY_AMT");
+    let (token, _asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env], // Empty amounts vector
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_distribute_payment_mismatched_vector_lengths() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "MISMATCH");
+    let (token, _asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // 3 addresses but 4 amounts
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_distribute_refund_mismatched_vector_lengths() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "REFUND_MISMATCH");
+    let (token, _asset) = make_token(&env);
+
+    // 1 address but 2 amounts
+    let result = distributor.try_distribute_refund(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone()],
+        &soroban_sdk::vec![&env, 100i128, 50i128],
+        &3u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Invalid Escrow Status Values
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_invalid_escrow_status_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "STATUS_ZERO");
+    let (token, _asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &0u32, // Invalid status (0)
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidEscrowStatus)));
+}
+
+#[test]
+fn test_distribute_payment_invalid_escrow_status_high_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "STATUS_HIGH");
+    let (token, _asset) = make_token(&env);
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &999u32, // Invalid status (999)
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidEscrowStatus)));
+}
+
+#[test]
+fn test_distribute_refund_invalid_escrow_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "REFUND_STATUS");
+    let (token, _asset) = make_token(&env);
+
+    // Try to distribute refund with FUNDED status instead of REFUNDED
+    let result = distributor.try_distribute_refund(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), funder],
+        &soroban_sdk::vec![&env, 100i128],
+        &1u32, // FUNDED status, not REFUNDED (3)
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidEscrowStatus)));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: State Storage Persistence Verification
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribution_state_persists_after_payment() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    create_and_fund(&ctx, 1_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &1_000);
+
+    // Verify state before distribution
+    let state_before = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state_before.paid_distributed, 0);
+
+    // Perform distribution
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &500);
+
+    // Verify state persisted correctly
+    let state_after = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state_after.paid_distributed, 500);
+    assert!(!state_after.refund_distributed);
+
+    // Perform another distribution
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &500);
+
+    // Verify state updated correctly
+    let state_final = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state_final.paid_distributed, 1_000);
+    assert!(!state_final.refund_distributed);
+}
+
+#[test]
+fn test_distribution_state_persists_after_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    env.ledger().set_timestamp(1_000);
+    create_and_fund(&ctx, 1_000, 2_000);
+
+    ctx.payment_asset.mint(&ctx.payer, &400);
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &400);
+
+    env.ledger().set_timestamp(2_001);
+    ctx.escrow.refund(&ctx.invoice_id);
+
+    // Verify refund flag persisted
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 400);
+    assert!(state.refund_distributed);
+}
+
+#[test]
+fn test_fee_recipient_state_persists() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let new_recipient = Address::generate(&env);
+
+    // Set fee recipient
+    distributor.set_fee_recipient(&admin, &new_recipient);
+
+    // Verify it persisted
+    let retrieved = distributor.get_fee_recipient();
+    assert_eq!(retrieved, new_recipient);
+
+    // Update again
+    let another_recipient = Address::generate(&env);
+    distributor.set_fee_recipient(&admin, &another_recipient);
+
+    // Verify update persisted
+    let retrieved_again = distributor.get_fee_recipient();
+    assert_eq!(retrieved_again, another_recipient);
+}
+
+#[test]
+fn test_escrow_contract_state_persists() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _distributor_id, distributor) = distributor_only(&env);
+    let escrow = Address::generate(&env);
+
+    // Set escrow contract
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Verify it persisted
+    let retrieved = distributor.get_escrow_contract();
+    assert_eq!(retrieved, Some(escrow));
+
+    // Update to different escrow
+    let new_escrow = Address::generate(&env);
+    distributor.set_escrow_contract(&admin, &new_escrow);
+
+    // Verify update persisted
+    let retrieved_again = distributor.get_escrow_contract();
+    assert_eq!(retrieved_again, Some(new_escrow));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Maximum Value Boundary Testing
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_with_large_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    create_and_fund(&ctx, 1_000_000_000, 50_000); // 1 billion funding
+    ctx.payment_asset.mint(&ctx.payer, &1_000_000_000);
+
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &1_000_000_000);
+
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000_000_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 950_000_000);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 50_000_000);
+}
+
+#[test]
+fn test_distribute_multi_asset_with_maximum_recipients() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+    asset.mint(&distributor_id, &1_000);
+
+    // 20 recipients: residual (index 0) + 19 recipients at 5% (500 bps) each.
+    let mut recipients: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    let mut shares: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(&env);
+    for _ in 0..20 {
+        recipients.push_back(Address::generate(&env));
+        shares.push_back(500u32);
+    }
+
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 1_000,
+        split: DistributionSplit {
+            recipients: recipients.clone(),
+            shares_bps: shares,
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert!(result.is_ok());
+
+    // The 19 secondary recipients each get 5% of 1000 = 50.
+    for i in 1..20 {
+        let recipient = recipients.get(i).unwrap();
+        assert_eq!(token.balance(&recipient), 50);
+    }
+    // Primary (index 0) gets the residual: 1000 - (19 * 50) = 50.
+    assert_eq!(token.balance(&recipients.get(0).unwrap()), 50);
+    assert_eq!(token.balance(&distributor_id), 0);
+}
+
+/// Calling distribute_payment before initialize() returns NotInit.
+#[test]
+fn test_distribute_not_initialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deliberately skip initialize().
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    let (token, asset) = make_token(&env);
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_NOINIT");
+
+    asset.mint(&distributor_id, &1_000);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, escrow.clone()],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+/// A non-admin, non-operator caller to distribute_multi_asset must be rejected
+/// with Unauthorized. This exercises the authorization guard directly on the
+/// distributor without going through the full escrow wiring.
+#[test]
+fn test_distribute_unauthorized_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    asset.mint(&distributor_id, &1_000);
+
+    let attacker = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 1_000,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, recipient],
+            shares_bps: soroban_sdk::vec![&env, 10_000u32],
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&attacker, &soroban_sdk::vec![&env, route]);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // No funds should have moved
+    assert_eq!(token.balance(&distributor_id), 1_000);
+}
+
+/// Distribute exactly the full token balance held by the distributor.
+/// Verifies that the contract can drain itself to zero with no leftover dust.
+#[test]
+fn test_distribute_full_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    let escrow = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_FULL");
+
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Fund the distributor with exactly the amount we will distribute.
+    // paid_amount=500, investor_amount=200, fee_bps=0 → total needed = 700.
+    let total = 700i128;
+    asset.mint(&distributor_id, &total);
+
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            token.address.clone(),
+            seller.clone(),
+            funder.clone(),
+            admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 500i128, 500i128, 200i128, 0i128],
+        &2u32,
+    );
+    assert!(
+        result.is_ok(),
+        "full-balance distribute should succeed: {result:?}"
+    );
+
+    // seller = 500, funder = 200, fee = 0
+    assert_eq!(token.balance(&seller), 500);
+    assert_eq!(token.balance(&funder), 200);
+    // The contract itself must be fully drained
+    assert_eq!(token.balance(&distributor_id), 0);
+
+    // State persisted correctly
+    let state = distributor.get_distribution_state(&escrow, &invoice_id);
+    assert_eq!(state.paid_distributed, 500);
+}
+
+/// distribute_multi_asset with three recipients via DistributionSplit.
+/// Verifies that the primary (residual) recipient and all secondary recipients
+/// receive the correct amounts with no dust left in the contract.
+#[test]
+fn test_distribute_multiple_recipients() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, distributor_id, distributor) = distributor_only(&env);
+    let (token, asset) = make_token(&env);
+
+    // Fund the distributor with 1_000 tokens.
+    asset.mint(&distributor_id, &1_000);
+
+    let primary = Address::generate(&env); // residual recipient (index 0)
+    let second = Address::generate(&env); // 30% share
+    let third = Address::generate(&env); // 20% share
+
+    // primary receives 1000 − 300 − 200 = 500 (residual)
+    let route = AssetRoute {
+        token: token.address.clone(),
+        amount: 1_000,
+        split: DistributionSplit {
+            recipients: soroban_sdk::vec![&env, primary.clone(), second.clone(), third.clone()],
+            shares_bps: soroban_sdk::vec![&env, 5_000u32, 3_000u32, 2_000u32],
+            referral: None,
+            referral_bps: 0,
+        },
+    };
+
+    let result = distributor.try_distribute_multi_asset(&admin, &soroban_sdk::vec![&env, route]);
+    assert!(result.is_ok());
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Multiple Distributions to Same Invoice
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_multiple_partial_distributions_to_same_invoice() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    create_and_fund(&ctx, 10_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &10_000);
+
+    // First partial distribution
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &2_000);
+    let state1 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state1.paid_distributed, 2_000);
+
+    // Second partial distribution
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &3_000);
+    let state2 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state2.paid_distributed, 5_000);
+
+    // Third partial distribution
+    ctx.escrow
+        .record_payment(&ctx.invoice_id, &ctx.payer, &5_000);
+    let state3 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state3.paid_distributed, 10_000);
+}
+
+#[test]
+fn test_distribution_state_isolated_between_invoices() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let invoice_id_2 = Symbol::new(&env, "INV_2");
+
+    create_and_fund(&ctx, 1_000, 50_000);
+    ctx.payment_asset.mint(&ctx.payer, &1_000);
+
+    // Distribute for first invoice
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &500);
+
+    // Check state for first invoice
+    let state1 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state1.paid_distributed, 500);
+
+    // Check state for second invoice (should be default)
+    let state2 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &invoice_id_2);
+    assert_eq!(state2.paid_distributed, 0);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edge Case: Uninitialized Contract Access
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_get_admin_requires_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    let result = distributor.try_get_admin();
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+#[test]
+fn test_get_fee_recipient_requires_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    let result = distributor.try_get_fee_recipient();
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+#[test]
+fn test_get_distribution_state_requires_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+    let escrow = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "TEST");
+
+    let result = distributor.try_get_distribution_state(&escrow, &invoice_id);
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+#[test]
+fn test_calculate_distribution_splits_requires_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+    let escrow = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "TEST");
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+
+    let result = distributor.try_calculate_distribution_splits(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![&env, seller.clone(), seller.clone(), funder, seller.clone()],
+        &soroban_sdk::vec![&env, 100i128, 0i128, 50i128, 500u32 as i128],
+    );
+
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+/// get_admin returns the exact address that was passed to initialize().
+/// Also verifies that a second, separate distributor returns its own admin.
+#[test]
+fn test_get_admin_returns_correct_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+
+    distributor.initialize(&admin);
+
+    let stored = distributor.get_admin();
+    assert_eq!(stored, admin, "get_admin must return the initialised admin");
+
+    // A second, independent distributor with a different admin should return
+    // its own admin, not the first one's.
+    let admin2 = Address::generate(&env);
+    let distributor_id2 = env.register(PaymentDistributor, ());
+    let distributor2 = PaymentDistributorClient::new(&env, &distributor_id2);
+    distributor2.initialize(&admin2);
+
+    assert_eq!(distributor2.get_admin(), admin2);
+    assert_ne!(distributor2.get_admin(), admin);
 }

@@ -15,7 +15,7 @@ pub enum StorageKey {
     FunderAmount(soroban_sdk::Symbol, soroban_sdk::Address),
     /// Persistent: highest nonce consumed for a signed off-chain approval, by buyer address.
     Nonce(soroban_sdk::Address),
-    /// Persistent: buyer whitelist flag (Issue #183).
+    /// Persistent: buyer whitelist flag by buyer address.
     BuyerWhitelist(soroban_sdk::Address),
 }
 
