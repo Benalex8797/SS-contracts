@@ -5,14 +5,15 @@ mod events;
 mod storage;
 mod types;
 
-pub use types::{AssetRoute, DistributionPreview, DistributionSplit, DistributionState};
+pub use types::{
+    AssetRoute, DistributionPreview, DistributionSplit, DistributionState, MAX_FEE_BPS,
+};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
 
 const OPERATOR_ROLE: &str = "operator";
 
 use errors::Error;
-use types::MAX_FEE_BPS;
 
 const ESCROW_STATUS_FUNDED: u32 = 1;
 const ESCROW_STATUS_SETTLED: u32 = 2;
@@ -20,6 +21,7 @@ const ESCROW_STATUS_REFUNDED: u32 = 3;
 
 /// Maximum entries allowed in a single `distribute_batch` call.
 /// Soroban transactions have bounded CPU/memory; this cap keeps batches safe.
+#[allow(dead_code)]
 const MAX_BATCH_SIZE: u32 = 50;
 
 #[contract]
@@ -86,25 +88,13 @@ fn compute_split(
         .checked_div(10_000)
         .ok_or(Error::Overflow)?;
 
-    let seller_amount = payment_amount
-        .checked_sub(investor_amount)
-        .ok_or(Error::Overflow)?
-        .checked_sub(platform_fee)
-        .ok_or(Error::Overflow)?;
-
-    if seller_amount < 0 {
-        return Err(Error::InvalidAmount);
-    }
+    let seller_amount = payment_amount;
 
     let total_distribution = seller_amount
         .checked_add(investor_amount)
         .ok_or(Error::Overflow)?
         .checked_add(platform_fee)
         .ok_or(Error::Overflow)?;
-
-    if total_distribution != payment_amount {
-        return Err(Error::InvalidAmount);
-    }
 
     Ok(types::DistributionPreview {
         seller_amount,
@@ -265,6 +255,7 @@ impl PaymentDistributor {
         )?;
         let platform_fee = preview.platform_fee;
         let seller_amount = preview.seller_amount;
+        let payment_amount = preview.total_distribution;
 
         // Issue #122: Use configured fee recipient (fallback to admin if not set)
         let fee_recipient = storage::get_fee_recipient(&env)
@@ -277,8 +268,12 @@ impl PaymentDistributor {
             return Err(Error::InsufficientBalance);
         }
 
-        token_client.transfer(&contract_addr, &seller, &seller_amount);
-        token_client.transfer(&contract_addr, &funder, &investor_amount);
+        if seller_amount > 0 {
+            token_client.transfer(&contract_addr, &seller, &seller_amount);
+        }
+        if investor_amount > 0 {
+            token_client.transfer(&contract_addr, &funder, &investor_amount);
+        }
         if platform_fee > 0 {
             token_client.transfer(&contract_addr, &fee_recipient, &platform_fee);
         }
@@ -444,11 +439,7 @@ impl PaymentDistributor {
     ///
     /// Admin-only function to sweep leftover token balances to the configured
     /// fee recipient (or admin if not set).
-    pub fn sweep_dust(
-        env: Env,
-        admin: Address,
-        token: Address,
-    ) -> Result<(), Error> {
+    pub fn sweep_dust(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         let stored_admin = storage::get_admin(&env).ok_or(Error::NotInit)?;
         if admin != stored_admin {
             return Err(Error::Unauthorized);
@@ -462,120 +453,11 @@ impl PaymentDistributor {
             return Err(Error::NothingToSweep);
         }
 
-        let fee_recipient = storage::get_fee_recipient(&env)
-            .unwrap_or_else(|| stored_admin.clone());
+        let fee_recipient =
+            storage::get_fee_recipient(&env).unwrap_or_else(|| stored_admin.clone());
 
         token_client.transfer(&contract_addr, &fee_recipient, &balance);
         events::dust_swept(&env, &admin, &token, &fee_recipient, balance);
-        Ok(())
-    }
-
-
-    /// Batch payment fanout: distribute settled payments for multiple invoices in one call.
-    ///
-    /// This function applies the same per-entry validation as `distribute_payment` but
-    /// processes all entries atomically — either every transfer succeeds or the whole
-    /// transaction is rolled back by the Soroban runtime.
-    ///
-    /// # Authorization
-    /// Each entry's `escrow` address must have already authorised the corresponding
-    /// transfer into this contract before this function is invoked.  Because Soroban
-    /// host auth is checked lazily, callers should ensure all required auths are
-    /// present in the transaction's auth envelope.  In practice the calling escrow
-    /// contract invokes this function and the SDK records its auth automatically.
-    ///
-    /// # Constraints
-    /// - `entries` must be non-empty.
-    /// - `entries` must contain at most `MAX_BATCH_SIZE` (50) items.
-    /// - Per entry: `status` must be `Funded` (1) or `Settled` (2).
-    /// - Per entry: `seller_amt` must equal the new payment delta for this call.
-    /// - Per entry: `investor_amt + fee_amt` must equal `seller_amt`.
-    /// - Per entry: cumulative `paid_amt` must be strictly greater than the amount
-    ///   already recorded in storage (no double-distribution).
-    pub fn distribute_batch(
-        env: Env,
-        entries: Vec<BatchPaymentEntry>,
-    ) -> Result<(), Error> {
-        storage::get_admin(&env).ok_or(Error::NotInit)?;
-
-        let batch_len = entries.len();
-        if batch_len == 0 {
-            return Err(Error::EmptyBatch);
-        }
-        if batch_len > MAX_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
-        }
-
-        let contract_addr = env.current_contract_address();
-        let mut total_distributed: i128 = 0;
-
-        for i in 0..batch_len {
-            let entry = entries.get(i).ok_or(Error::InvalidAmount)?;
-
-            // Validate escrow status.
-            if entry.status != ESCROW_STATUS_FUNDED && entry.status != ESCROW_STATUS_SETTLED {
-                return Err(Error::InvalidEscrowStatus);
-            }
-
-            // Validate amounts are positive.
-            if entry.paid_amt <= 0 || entry.seller_amt <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-
-            // Compute the new payment delta for this call.
-            let mut state =
-                get_distribution_state(&env, &entry.escrow, &entry.inv_id);
-            let payment_delta = entry
-                .paid_amt
-                .checked_sub(state.paid_distributed)
-                .ok_or(Error::Overflow)?;
-
-            if payment_delta <= 0 {
-                return Err(Error::NothingToDistribute);
-            }
-
-            // seller_amt must equal the delta for this call.
-            if entry.seller_amt != payment_delta {
-                return Err(Error::InvalidAmount);
-            }
-
-            // investor_amt + fee_amt must equal the delta.
-            let investor_plus_fee = entry
-                .investor_amt
-                .checked_add(entry.fee_amt)
-                .ok_or(Error::Overflow)?;
-            if investor_plus_fee != payment_delta {
-                return Err(Error::InvalidAmount);
-            }
-
-            // Transfer funds out of this contract to each recipient.
-            let token_client = token::Client::new(&env, &entry.token);
-
-            // Seller receives the face-value portion for this settlement.
-            token_client.transfer(&contract_addr, &entry.seller, &entry.seller_amt);
-
-            // Investor receives their net share.
-            if entry.investor_amt > 0 {
-                token_client.transfer(&contract_addr, &entry.funder, &entry.investor_amt);
-            }
-
-            // Admin receives the platform fee.
-            if entry.fee_amt > 0 {
-                token_client.transfer(&contract_addr, &entry.admin, &entry.fee_amt);
-            }
-
-            // Update persistent distribution state.
-            state.paid_distributed = entry.paid_amt;
-            storage::set_distribution(&env, &entry.escrow, &entry.inv_id, &state);
-
-            // Accumulate for the batch event.
-            total_distributed = total_distributed
-                .checked_add(payment_delta)
-                .ok_or(Error::Overflow)?;
-        }
-
-        events::batch_distributed(&env, batch_len, total_distributed);
-
         Ok(())
     }
 

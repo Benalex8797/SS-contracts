@@ -1,11 +1,12 @@
 //! Invoice Token (SEP-41) contract for StellarSettle.
 //!
 //! Implements a fungible token representing fractional ownership of an invoice,
-//! with mint (admin/escrow), burn, allowances, optional transfer lock,
+//! with minting, burning, allowances, optional transfer lock,
 //! fee deduction, role-based admin, nonce tracking, and ownership history.
 
 #![no_std]
 
+mod constants;
 mod errors;
 mod events;
 mod storage;
@@ -15,7 +16,6 @@ use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString,
 
 use crate::errors::Error;
 use crate::types::{OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
-
 const ADMIN_ROLE: &str = "admin";
 const MINTER_ROLE: &str = "minter";
 const PAUSER_ROLE: &str = "pauser";
@@ -468,27 +468,27 @@ impl InvoiceToken {
         }
         // Validate amounts and compute total
         let mut total_amount: i128 = 0;
-        for amt in amounts.iter() {
-            if amt <= 0 {
+        for i in 0..amounts.len() {
+            let amount = amounts.get(i).unwrap();
+            if amount < 0 {
                 return Err(Error::InvalidAmount);
             }
-            total_amount = total_amount.checked_add(amt).ok_or(Error::Overflow)?;
-        }
-        // Update total supply once
-        let new_total_supply = storage::get_total_supply(&env)
-            .checked_add(total_amount)
-            .ok_or(Error::Overflow)?;
-        storage::set_total_supply(&env, new_total_supply);
-        // Mint each recipient
-        for i in 0..to.len() {
+            if amount == 0 {
+                continue;
+            }
+            total_amount = total_amount.checked_add(amount).ok_or(Error::Overflow)?;
             let recipient = to.get(i).unwrap();
-            let amount = amounts.get(i).unwrap();
             let new_bal = storage::get_balance(&env, &recipient)
                 .checked_add(amount)
                 .ok_or(Error::Overflow)?;
             storage::set_balance(&env, &recipient, new_bal);
             events::mint_event(&env, &recipient, amount);
         }
+        // Update total supply once
+        let new_total_supply = storage::get_total_supply(&env)
+            .checked_add(total_amount)
+            .ok_or(Error::Overflow)?;
+        storage::set_total_supply(&env, new_total_supply);
         Ok(())
     }
 

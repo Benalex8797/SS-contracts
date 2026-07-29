@@ -27,6 +27,7 @@ pub struct DistributionState {
 }
 
 /// Maximum allowed fee in basis points (100% = 10,000 BPS). Issue #124.
+#[allow(dead_code)]
 pub const MAX_FEE_BPS: u32 = 10_000;
 
 /// Distribution split configuration with an optional referral fee cut. Issue #130.

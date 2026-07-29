@@ -201,4 +201,10 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ---
 
-Built with ❤️ on Stellar
+Implemented initial updates to the test suite to align with the new soroban-sdk 27.x ContractEvents API:
+
+Replaced direct events.last() calls with events.events().last() where appropriate.
+Updated length checks to use .events().len().
+Adjusted iterator usage for event verification, switching to .events().iter() and .events().rev() as needed.
+Modified event loop logic to work with the new slice‑based API (events_after.get(i)).
+These changes address the compilation errors caused by the breaking API change. Further refactoring may be needed for remaining events.last() and iterator patterns.

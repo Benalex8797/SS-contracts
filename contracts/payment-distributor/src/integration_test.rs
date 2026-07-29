@@ -53,7 +53,7 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> FlowContext<'_
         &admin,
         &SorobanString::from_str(env, "Invoice Flow"),
         &SorobanString::from_str(env, "INVF"),
-        &18,
+        &7,
         &invoice_id,
         &escrow_id,
     );
@@ -94,6 +94,7 @@ fn create_and_fund(ctx: &FlowContext<'_>, amount: i128, due_date: u64) {
         &ctx.payment_token.address,
         &ctx.inv_token.address,
         &test_commitment(&ctx.escrow.env),
+        &None,
     );
     ctx.escrow.fund_escrow(&ctx.invoice_id, &ctx.buyer, &amount);
 }
