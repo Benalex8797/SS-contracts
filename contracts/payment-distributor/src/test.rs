@@ -14,6 +14,7 @@ fn test_commitment(env: &Env) -> BytesN<32> {
 }
 
 struct TestContext<'a> {
+    env: Env,
     admin: Address,
     seller: Address,
     buyer: Address,
@@ -66,6 +67,7 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> TestContext<'_
     }
 
     TestContext {
+        env: env.clone(),
         admin,
         seller,
         buyer,
@@ -234,6 +236,52 @@ fn test_refund_distribution_can_only_happen_once() {
 // ══════════════════════════════════════════════════════════════════════════════
 // Issue #124: Max Fee BPS Boundary Guard Checks (10,000 max)
 // ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_distribute_payment_rejects_negative_fee_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone(),
+        ],
+        &soroban_sdk::vec![&env, 100i128, 0i128, 0i128, -1i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_distribute_payment_rejects_fee_bps_out_of_u32_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone(),
+        ],
+        &soroban_sdk::vec![&env, 100i128, 0i128, 0i128, (u32::MAX as i128) + 1],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
 
 #[test]
 fn test_fee_bps_at_maximum_succeeds() {

@@ -14,6 +14,7 @@ fn test_commitment(env: &Env) -> BytesN<32> {
 }
 
 struct FlowContext<'a> {
+    env: Env,
     admin: Address,
     seller: Address,
     buyer: Address,
@@ -66,6 +67,7 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> FlowContext<'_
     }
 
     FlowContext {
+        env: env.clone(),
         admin,
         seller,
         buyer,

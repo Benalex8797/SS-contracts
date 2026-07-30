@@ -285,6 +285,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "funders"
+                    },
+                    "val": {
+                      "vec": [
+                        {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "funding_milestone"
                     },
                     "val": "void"

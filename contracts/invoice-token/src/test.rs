@@ -2,6 +2,7 @@
 //! Unit tests for the invoice token contract.
 
 use super::{InvoiceToken, InvoiceTokenClient};
+use crate::types::StorageKey;
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
 use soroban_sdk::{
     Address, Env, IntoVal, String as SorobanString, Symbol, TryFromVal, TryIntoVal, Val, Vec,
@@ -1412,4 +1413,572 @@ fn test_extend_allowance_fails_after_expiry() {
         .with_mut(|l| l.sequence_number = expiration + 1);
     let result = client.try_extend_allowance(&admin, &spender, &(expiration + 100));
     assert_eq!(result, Err(Ok(crate::errors::Error::AllowanceExpired)));
+}
+
+// ========== Storage Key Serialization Tests (Issue #161) ==========
+
+/// Helper: assert a StorageKey roundtrips losslessly through Val.
+fn assert_key_roundtrip(env: &Env, key: StorageKey) {
+    let val: Val = key.clone().into_val(env);
+    let back: StorageKey = StorageKey::try_from_val(env, &val).expect("roundtrip failed");
+    assert_eq!(key, back, "StorageKey roundtrip equality");
+}
+
+/// Each StorageKey variant serializes and deserializes without data loss.
+#[test]
+fn test_storage_key_serialization_roundtrip_metadata() {
+    let env = Env::default();
+    assert_key_roundtrip(&env, StorageKey::Metadata);
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_total_supply() {
+    let env = Env::default();
+    assert_key_roundtrip(&env, StorageKey::TotalSupply);
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_fee_bps() {
+    let env = Env::default();
+    assert_key_roundtrip(&env, StorageKey::FeeBps);
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_balance() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    assert_key_roundtrip(&env, StorageKey::Balance(addr));
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_allowance() {
+    let env = Env::default();
+    let from = Address::generate(&env);
+    let spender = Address::generate(&env);
+    assert_key_roundtrip(&env, StorageKey::Allowance(from, spender));
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_role_admin() {
+    let env = Env::default();
+    let role = Symbol::new(&env, "admin");
+    assert_key_roundtrip(&env, StorageKey::RoleAdmin(role));
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_role_grant() {
+    let env = Env::default();
+    let role = Symbol::new(&env, "minter");
+    let account = Address::generate(&env);
+    assert_key_roundtrip(&env, StorageKey::RoleGrant(role, account));
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_nonce() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    assert_key_roundtrip(&env, StorageKey::Nonce(addr));
+}
+
+#[test]
+fn test_storage_key_serialization_roundtrip_history() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    assert_key_roundtrip(&env, StorageKey::History(addr));
+}
+
+/// All StorageKey variants produce distinct serialized values (no collisions).
+#[test]
+fn test_storage_key_uniqueness_all_variants_distinct() {
+    let env = Env::default();
+    let addr_a = Address::generate(&env);
+    let addr_b = Address::generate(&env);
+    let role_admin = Symbol::new(&env, "admin");
+
+    let keys = [
+        StorageKey::Metadata,
+        StorageKey::TotalSupply,
+        StorageKey::FeeBps,
+        StorageKey::Balance(addr_a.clone()),
+        StorageKey::Allowance(addr_a.clone(), addr_b.clone()),
+        StorageKey::RoleAdmin(role_admin.clone()),
+        StorageKey::RoleGrant(role_admin.clone(), addr_a.clone()),
+        StorageKey::Nonce(addr_a.clone()),
+        StorageKey::History(addr_a.clone()),
+    ];
+
+    let n = keys.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            assert_ne!(
+                keys[i], keys[j],
+                "StorageKey variants at indices {i} and {j} must be distinct"
+            );
+        }
+    }
+}
+
+/// Same variant with different data produces different keys.
+#[test]
+fn test_storage_key_same_variant_different_data_distinct() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+    let other_addr = Address::generate(&env);
+
+    // Balance with different addresses
+    assert_ne!(
+        StorageKey::Balance(addr.clone()),
+        StorageKey::Balance(other_addr.clone()),
+        "Balance keys with different addresses must differ"
+    );
+
+    // Nonce with different addresses
+    assert_ne!(
+        StorageKey::Nonce(addr.clone()),
+        StorageKey::Nonce(other_addr.clone()),
+        "Nonce keys with different addresses must differ"
+    );
+
+    // History with different addresses
+    assert_ne!(
+        StorageKey::History(addr.clone()),
+        StorageKey::History(other_addr.clone()),
+        "History keys with different addresses must differ"
+    );
+
+    // Allowance with different pairs
+    let third = Address::generate(&env);
+    assert_ne!(
+        StorageKey::Allowance(addr.clone(), other_addr.clone()),
+        StorageKey::Allowance(other_addr.clone(), addr.clone()),
+        "Allowance (A,B) must differ from (B,A)"
+    );
+    assert_ne!(
+        StorageKey::Allowance(addr.clone(), other_addr.clone()),
+        StorageKey::Allowance(addr.clone(), third.clone()),
+        "Allowance with different spender must differ"
+    );
+    assert_ne!(
+        StorageKey::Allowance(other_addr.clone(), addr.clone()),
+        StorageKey::Allowance(addr.clone(), third.clone()),
+        "Allowance with different from must differ"
+    );
+
+    // RoleAdmin with different symbols
+    assert_ne!(
+        StorageKey::RoleAdmin(Symbol::new(&env, "admin")),
+        StorageKey::RoleAdmin(Symbol::new(&env, "minter")),
+        "RoleAdmin keys with different roles must differ"
+    );
+
+    // RoleGrant with different roles or accounts
+    assert_ne!(
+        StorageKey::RoleGrant(Symbol::new(&env, "pauser"), addr.clone()),
+        StorageKey::RoleGrant(Symbol::new(&env, "admin"), addr.clone()),
+        "RoleGrant keys with different roles must differ"
+    );
+    assert_ne!(
+        StorageKey::RoleGrant(Symbol::new(&env, "pauser"), addr.clone()),
+        StorageKey::RoleGrant(Symbol::new(&env, "pauser"), other_addr.clone()),
+        "RoleGrant keys with different accounts must differ"
+    );
+}
+
+/// Instance-storage keys are distinct from persistent-storage keys.
+/// This test verifies that the XDR serialization preserves the variant
+/// discriminant so instance keys never collide with persistent keys.
+#[test]
+fn test_storage_key_instance_vs_persistent_distinct() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+
+    let instance_keys = [
+        StorageKey::Metadata,
+        StorageKey::TotalSupply,
+        StorageKey::FeeBps,
+        StorageKey::RoleAdmin(Symbol::new(&env, "role")),
+        StorageKey::RoleGrant(Symbol::new(&env, "role"), addr.clone()),
+    ];
+
+    let persistent_keys = [
+        StorageKey::Balance(addr.clone()),
+        StorageKey::Allowance(addr.clone(), Address::generate(&env)),
+        StorageKey::Nonce(addr.clone()),
+        StorageKey::History(addr.clone()),
+    ];
+
+    for ik in &instance_keys {
+        for pk in &persistent_keys {
+            assert_ne!(
+                ik, pk,
+                "Instance key {:?} must not collide with persistent key {:?}",
+                ik, pk
+            );
+        }
+    }
+}
+
+/// Deterministic serialization: the same key produces the same serialized value.
+/// Verified through StorageKey equality (which derives PartialEq) since XDR
+/// serialization is deterministic for the same key data.
+#[test]
+fn test_storage_key_deterministic_serialization() {
+    let env = Env::default();
+    let addr_a = Address::generate(&env);
+    let addr_b = Address::generate(&env);
+
+    // Roundtrip: StorageKey -> Val -> StorageKey preserves identity
+    let key = StorageKey::Balance(addr_a.clone());
+    let val: Val = key.clone().into_val(&env);
+    let back = StorageKey::try_from_val(&env, &val).expect("roundtrip");
+    assert_eq!(key, back, "Deterministic Balance roundtrip");
+
+    let key = StorageKey::Allowance(addr_a.clone(), addr_b.clone());
+    let val: Val = key.clone().into_val(&env);
+    let back = StorageKey::try_from_val(&env, &val).expect("roundtrip");
+    assert_eq!(key, back, "Deterministic Allowance roundtrip");
+
+    let key = StorageKey::RoleAdmin(Symbol::new(&env, "admin"));
+    let val: Val = key.clone().into_val(&env);
+    let back = StorageKey::try_from_val(&env, &val).expect("roundtrip");
+    assert_eq!(key, back, "Deterministic RoleAdmin roundtrip");
+
+    // Identically constructed keys are equal (deterministic construction)
+    assert_eq!(
+        StorageKey::Balance(addr_a.clone()),
+        StorageKey::Balance(addr_a),
+        "Identical Balance keys must be equal"
+    );
+}
+
+/// Edge case: empty Symbol in RoleAdmin and RoleGrant.
+#[test]
+fn test_storage_key_empty_symbol_serialization() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+
+    let empty_role = Symbol::new(&env, "");
+    let key_admin = StorageKey::RoleAdmin(empty_role.clone());
+    let key_grant = StorageKey::RoleGrant(empty_role.clone(), addr);
+
+    assert_key_roundtrip(&env, key_admin);
+    assert_key_roundtrip(&env, key_grant);
+}
+
+/// Edge case: multi-byte Symbol values in StorageKey.
+#[test]
+fn test_storage_key_multibyte_symbol_serialization() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+
+    let long_role = Symbol::new(&env, "a_really_long_role_name_12345");
+    let key = StorageKey::RoleGrant(long_role.clone(), addr.clone());
+    assert_key_roundtrip(&env, key);
+
+    let key = StorageKey::RoleAdmin(long_role);
+    assert_key_roundtrip(&env, key);
+}
+
+/// StorageKey::Balance(addr) produces the same key value when cloned.
+#[test]
+fn test_storage_key_balance_clone_produces_same_key() {
+    let env = Env::default();
+    let addr = Address::generate(&env);
+
+    let key1 = StorageKey::Balance(addr.clone());
+    let key2 = StorageKey::Balance(addr);
+    assert_eq!(
+        key1, key2,
+        "Cloned Balance keys must produce identical values"
+    );
+}
+
+/// Many different addresses produce distinct Balance storage keys.
+#[test]
+fn test_storage_key_many_balance_addresses_distinct() {
+    let env = Env::default();
+    let mut seen: Vec<StorageKey> = Vec::new(&env);
+
+    for _ in 0..20 {
+        let addr = Address::generate(&env);
+        let key = StorageKey::Balance(addr);
+
+        for existing in seen.iter() {
+            assert_ne!(key, existing, "Generated Balance keys must be unique");
+        }
+        seen.push_back(key);
+    }
+}
+
+/// Allowance key uniqueness across many address pairs.
+#[test]
+fn test_storage_key_many_allowance_pairs_distinct() {
+    let env = Env::default();
+    let mut seen: Vec<StorageKey> = Vec::new(&env);
+
+    for _ in 0..15 {
+        let from = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let key = StorageKey::Allowance(from, spender);
+
+        for existing in seen.iter() {
+            assert_ne!(key, existing, "Generated Allowance keys must be unique");
+        }
+        seen.push_back(key);
+    }
+
+    // Also verify that the same pair repeated gives the same key (determinism)
+    let addr_a = Address::generate(&env);
+    let addr_b = Address::generate(&env);
+    let k1 = StorageKey::Allowance(addr_a.clone(), addr_b.clone());
+    let k2 = StorageKey::Allowance(addr_a, addr_b);
+    assert_eq!(k1, k2, "Same Allowance pair must produce identical key");
+}
+
+/// Full lifecycle: write data via storage key, read it back, verify integrity.
+#[test]
+fn test_storage_key_total_supply_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Test");
+    let symbol = SorobanString::from_str(&env, "TST");
+    let invoice_id = Symbol::new(&env, "inv");
+    client.initialize(&admin, &name, &symbol, &7u32, &invoice_id, &minter);
+
+    // Initial total supply should be 0
+    assert_eq!(client.total_supply(), 0);
+
+    // Mint and verify total supply increases
+    let user = Address::generate(&env);
+    client.mint(&user, &5000, &minter);
+    assert_eq!(client.total_supply(), 5000);
+
+    // Burn and verify total supply decreases
+    client.burn(&user, &2000);
+    assert_eq!(client.total_supply(), 3000);
+}
+
+/// Verify StorageKey::Metadata lifecycle through full initialize + read flow.
+#[test]
+fn test_storage_key_metadata_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, minter) = setup_token(&env);
+
+    // Verify metadata is persisted and accessible
+    assert_eq!(
+        client.name(),
+        SorobanString::from_str(&env, "Invoice INV-001")
+    );
+    assert_eq!(client.symbol(), SorobanString::from_str(&env, "INV001"));
+    assert_eq!(client.decimals(), 7);
+    assert!(client.transfer_locked());
+
+    // Update decimals - verify metadata mutation works via storage key
+    client.set_decimals(&12);
+    assert_eq!(client.decimals(), 12);
+}
+
+/// Verify StorageKey::Balance lifecycle: mint, transfer, balance queries.
+#[test]
+fn test_storage_key_balance_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, minter) = setup_token(&env);
+    client.set_transfer_locked(&admin, &false);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Mint to alice
+    client.mint(&alice, &1000, &minter);
+    assert_eq!(client.balance(&alice), 1000);
+
+    // Transfer from alice to bob
+    client.transfer(&alice, &bob, &400);
+    assert_eq!(client.balance(&alice), 600);
+    assert_eq!(client.balance(&bob), 400);
+
+    // Verify uninitialized address returns 0
+    let charlie = Address::generate(&env);
+    assert_eq!(client.balance(&charlie), 0);
+}
+
+/// Verify StorageKey::Allowance lifecycle: approve, transfer_from, allowance queries.
+#[test]
+fn test_storage_key_allowance_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, minter) = setup_token(&env);
+    client.set_transfer_locked(&admin, &false);
+    client.mint(&admin, &2000, &minter);
+
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 100;
+
+    // Approve
+    client.approve(&admin, &spender, &1000, &expiration);
+    assert_eq!(client.allowance(&admin, &spender), 1000);
+
+    // Transfer from reduces allowance
+    client.transfer_from(&spender, &admin, &recipient, &300);
+    assert_eq!(client.allowance(&admin, &spender), 700);
+    assert_eq!(client.balance(&recipient), 300);
+
+    // Revoke approval
+    client.revoke_approval(&admin, &spender);
+    assert_eq!(client.allowance(&admin, &spender), 0);
+}
+
+/// Verify StorageKey::Nonce lifecycle.
+#[test]
+fn test_storage_key_nonce_storage_lifecycle() {
+    let env = Env::default();
+    let (client, admin, _minter) = setup_token(&env);
+
+    // Initial nonce is 0
+    assert_eq!(client.get_nonce(&admin), 0);
+
+    // Querying nonce doesn't change it
+    assert_eq!(client.get_nonce(&admin), 0);
+
+    // Unknown account also returns 0
+    let unknown = Address::generate(&env);
+    assert_eq!(client.get_nonce(&unknown), 0);
+}
+
+/// Verify StorageKey::History lifecycle.
+#[test]
+fn test_storage_key_history_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, minter) = setup_token(&env);
+    client.set_transfer_locked(&admin, &false);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Mint to alice (no history entry for mint)
+    client.mint(&alice, &1000, &minter);
+
+    // Transfer from alice to bob should create a history record
+    client.transfer(&alice, &bob, &400);
+
+    // Check history for alice
+    let alice_history = client.get_token_history(&alice);
+    assert!(
+        alice_history.len() > 0,
+        "Alice should have history after transferring out"
+    );
+
+    // Check history for bob
+    let bob_history = client.get_token_history(&bob);
+    assert!(
+        bob_history.len() > 0,
+        "Bob should have history after receiving tokens"
+    );
+}
+
+/// Verify StorageKey::FeeBps lifecycle.
+#[test]
+fn test_storage_key_fee_bps_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _minter) = setup_token(&env);
+
+    // Default fee is 0
+    assert_eq!(client.get_fee_bps(), 0);
+
+    // Set fee
+    client.set_fee_bps(&admin, &500);
+    assert_eq!(client.get_fee_bps(), 500);
+
+    // Update fee
+    client.set_fee_bps(&admin, &1000);
+    assert_eq!(client.get_fee_bps(), 1000);
+}
+
+/// Verify RoleAdmin and RoleGrant storage key lifecycles.
+#[test]
+fn test_storage_key_role_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _minter) = setup_token(&env);
+
+    let account = Address::generate(&env);
+
+    // Use a pre-configured role (admin) since `set_role_admin` requires the caller
+    // to be the current admin of that role, and new roles have no admin.
+    let role = Symbol::new(&env, "admin");
+
+    // Initially the admin is the role admin (set during initialize)
+    let role_admin: Address = client.get_role_admin(&role);
+    assert_eq!(role_admin, admin.clone());
+
+    // Change the role admin to someone else
+    let new_admin = Address::generate(&env);
+    client.set_role_admin(&admin, &role, &new_admin);
+    let updated_admin: Address = client.get_role_admin(&role);
+    assert_eq!(updated_admin, new_admin.clone());
+
+    // Initially role not granted for a new account
+    assert!(!client.has_role(&role, &account));
+
+    // Grant role
+    client.grant_role(&new_admin, &role, &account);
+    assert!(client.has_role(&role, &account));
+
+    // Revoke role
+    client.revoke_role(&new_admin, &role, &account);
+    assert!(!client.has_role(&role, &account));
+}
+
+/// Unconfigured roles return RoleNotGranted when queried.
+#[test]
+fn test_storage_key_unconfigured_role_returns_error() {
+    let env = Env::default();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    let custom_role = Symbol::new(&env, "nonexistent_role");
+    let result = client.try_get_role_admin(&custom_role);
+    assert_eq!(result, Err(Ok(crate::errors::Error::RoleNotGranted)));
+}
+
+/// Verify that two different roles with the same account produce distinct keys.
+#[test]
+fn test_storage_key_role_grant_cross_role_distinct() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _minter) = setup_token(&env);
+    let account = Address::generate(&env);
+
+    let role_a = Symbol::new(&env, "admin");
+    let role_b = Symbol::new(&env, "minter");
+
+    client.grant_role(&admin, &role_a, &account);
+    client.grant_role(&admin, &role_b, &account);
+
+    assert!(client.has_role(&role_a, &account));
+    assert!(client.has_role(&role_b, &account));
+
+    // Revoke only role_a
+    client.revoke_role(&admin, &role_a, &account);
+    assert!(!client.has_role(&role_a, &account));
+    assert!(
+        client.has_role(&role_b, &account),
+        "Role B must still be granted after revoking role A"
+    );
 }

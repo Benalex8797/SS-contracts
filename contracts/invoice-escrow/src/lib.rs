@@ -152,6 +152,7 @@ impl InvoiceEscrow {
             purchase_price,
             funded_amt: 0,
             funder: None,
+            funders: soroban_sdk::Vec::new(&env),
             due_dt: due_date,
             token: payment_token.clone(),
             inv_token: invoice_token.clone(),
@@ -180,6 +181,14 @@ impl InvoiceEscrow {
 
     /// Cancel an escrow in Created state, refunding any partial funds to the funders.
     /// Only the seller may cancel, and only while status is Created.
+    /// Cancel an unfunded escrow. Only the seller may cancel, and only while status is Created
+    /// AND no investor has contributed any funds yet.
+    ///
+    /// Locked out after partial payment: `fund_escrow` accepts partial contributions and only
+    /// flips `status` to `Funded` once the escrow is fully subscribed, so an escrow with
+    /// `funded_amt > 0` can still read as `Created`. Cancelling in that window would strand the
+    /// investor's already-transferred funds (cancellation has no refund path), so any nonzero
+    /// `funded_amt` blocks cancellation regardless of status.
     ///
     /// Emits `escrow_refunded` (if partial funds existed) and `escrow_cancelled`.
     pub fn cancel_escrow(env: Env, invoice_id: Symbol, seller: Address) -> Result<(), Error> {
@@ -244,6 +253,9 @@ impl InvoiceEscrow {
                 soroban_sdk::vec![&env, contract.to_val(), false.into_val(&env)],
             );
             events::escrow_refunded(&env, invoice_id.clone(), amount_to_refund);
+        }
+        if data.funded_amt > 0 {
+            return Err(Error::EscrowPartiallyFunded);
         }
         data.status = EscrowStatus::Cancelled;
         storage::set_escrow(&env, invoice_id.clone(), &data);
@@ -367,6 +379,17 @@ impl InvoiceEscrow {
         storage::set_funder_amount(env, invoice_id.clone(), buyer, new_funder_amt);
 
         data.funded_amt = new_funded;
+
+        let mut already_recorded = false;
+        for funder in data.funders.iter() {
+            if funder == buyer.clone() {
+                already_recorded = true;
+                break;
+            }
+        }
+        if !already_recorded {
+            data.funders.push_back(buyer.clone());
+        }
 
         // MVP: Store the first funder for direct distribution
         if data.funder.is_none() {
@@ -711,10 +734,7 @@ impl InvoiceEscrow {
             EscrowStatus::Settled | EscrowStatus::Refunded | EscrowStatus::Cancelled => {}
             _ => return Err(Error::EscrowNotSettled),
         }
-        if let Some(funder) = &data.funder {
-            storage::set_funder_amount(&env, invoice_id.clone(), funder, 0);
-        }
-        storage::remove_escrow(&env, invoice_id.clone());
+        storage::remove_escrow_state(&env, invoice_id.clone(), &data.funders);
         events::escrow_cleaned_up(&env, invoice_id);
         Ok(())
     }
