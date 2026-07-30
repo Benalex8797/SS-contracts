@@ -179,7 +179,14 @@ impl InvoiceEscrow {
         Ok(())
     }
 
-    /// Cancel an unfunded escrow. Only the seller may cancel, and only while status is Created.
+    /// Cancel an unfunded escrow. Only the seller may cancel, and only while status is Created
+    /// AND no investor has contributed any funds yet.
+    ///
+    /// Locked out after partial payment: `fund_escrow` accepts partial contributions and only
+    /// flips `status` to `Funded` once the escrow is fully subscribed, so an escrow with
+    /// `funded_amt > 0` can still read as `Created`. Cancelling in that window would strand the
+    /// investor's already-transferred funds (cancellation has no refund path), so any nonzero
+    /// `funded_amt` blocks cancellation regardless of status.
     ///
     /// Emits `escrow_cancelled` with `(invoice_id, seller)`.
     pub fn cancel_escrow(env: Env, invoice_id: Symbol, seller: Address) -> Result<(), Error> {
@@ -193,6 +200,9 @@ impl InvoiceEscrow {
         }
         if data.status != EscrowStatus::Created {
             return Err(Error::EscrowFunded);
+        }
+        if data.funded_amt > 0 {
+            return Err(Error::EscrowPartiallyFunded);
         }
         data.status = EscrowStatus::Cancelled;
         storage::set_escrow(&env, invoice_id.clone(), &data);
