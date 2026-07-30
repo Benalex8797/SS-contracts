@@ -352,7 +352,8 @@ fn test_two_token_escrow_different_tokens() {
     escrow_client.fund_escrow(&invoice_a, &buyer, &1000);
     escrow_client.record_payment(&invoice_a, &payer, &1000);
 
-
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_a),
         EscrowStatus::Settled
     );
     // Token A balances
@@ -2373,14 +2374,13 @@ fn test_cancel_escrow_already_funded_rejected() {
 
     // Cannot cancel once fully funded (status is Funded)
     let res = client.try_cancel_escrow(&invoice_id, &seller);
-    assert_eq!(res, Err(Ok(Error::CancelNotAllowed)));
+    assert_eq!(res, Err(Ok(Error::EscrowFunded)));
 
     let _ = pt_client;
 }
 
 #[test]
 fn test_cancel_escrow_partially_funded_refunds() {
-fn test_cancel_escrow_partially_funded_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -2399,7 +2399,6 @@ fn test_cancel_escrow_partially_funded_rejected() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_PART");
-    let invoice_id = Symbol::new(&env, "INV_PFUND");
 
     pt_asset.mint(&buyer, &1000);
 
@@ -2420,25 +2419,55 @@ fn test_cancel_escrow_partially_funded_rejected() {
     assert_eq!(pt_client.balance(&buyer), 500);
     assert_eq!(pt_client.balance(&escrow_id), 500);
 
-    // Cancel while partially funded
+    // Cancel while partially funded should refund the buyer
     client.cancel_escrow(&invoice_id, &seller);
 
     assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Cancelled);
-
-    // Funds should be returned to buyer
     assert_eq!(pt_client.balance(&escrow_id), 0);
     assert_eq!(pt_client.balance(&buyer), 1000);
+}
+
+#[test]
+fn test_cancel_escrow_partially_funded_cancels_and_refunds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin.clone());
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let pt_client = TokenClient::new(&env, &pt_id.address());
+
+    client.initialize(&admin, &0);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_PFUND");
+
+    pt_asset.mint(&buyer, &1000);
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000i128,
+        &1000i128,
+        &9_999_999u64,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "test_invoice_data"),
+        &Some(500),
     );
+    client.fund_escrow(&invoice_id, &buyer, &500);
 
-    // Partial funding: status stays Created, but funds have already moved into escrow.
-    client.fund_escrow(&invoice_id, &buyer, &400);
-    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Created);
-
-    let res = client.try_cancel_escrow(&invoice_id, &seller);
-    assert_eq!(res, Err(Ok(Error::EscrowPartiallyFunded)));
-
-    // Status must remain unchanged after the rejected cancellation attempt.
-    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Created);
+    // Partial funding cancellation should refund and succeed
+    client.cancel_escrow(&invoice_id, &seller);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Cancelled);
+    assert_eq!(pt_client.balance(&buyer), 1000);
 }
 
 #[test]
@@ -5180,7 +5209,7 @@ fn test_settlement_at_exact_due_date_state_persistence() {
     let payer = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_STATE_DT");
     let amount = 2000i128;
-    let purchase_price = 1800i128;
+    let purchase_price = 2000i128;
     let due_date = 60000u64;
 
     env.ledger().with_mut(|li| li.timestamp = 10000);

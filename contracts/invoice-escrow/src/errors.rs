@@ -54,4 +54,12 @@ pub enum Error {
     InvalidMilestoneAmount = 23,
     /// Cannot cancel because escrow is not in the correct state.
     CancelNotAllowed = 24,
+    /// Penalty configuration is invalid (e.g. rate exceeds maximum).
+    InvalidPenaltyConfig = 25,
+    /// Payment token contract is invalid or does not implement the token interface.
+    InvalidPaymentToken = 26,
+    /// Invoice token contract is invalid or does not implement the required interface.
+    InvalidInvoiceToken = 27,
+    /// Payment token and invoice token must be different contracts.
+    IdenticalTokens = 28,
 }

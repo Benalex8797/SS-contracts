@@ -203,6 +203,9 @@ impl InvoiceEscrow {
         if data.status == EscrowStatus::Cancelled {
             return Err(Error::EscrowCancelled);
         }
+        if data.status == EscrowStatus::Funded {
+            return Err(Error::EscrowFunded);
+        }
         if data.status != EscrowStatus::Created {
             return Err(Error::CancelNotAllowed);
         }
@@ -253,9 +256,6 @@ impl InvoiceEscrow {
                 soroban_sdk::vec![&env, contract.to_val(), false.into_val(&env)],
             );
             events::escrow_refunded(&env, invoice_id.clone(), amount_to_refund);
-        }
-        if data.funded_amt > 0 {
-            return Err(Error::EscrowPartiallyFunded);
         }
         data.status = EscrowStatus::Cancelled;
         storage::set_escrow(&env, invoice_id.clone(), &data);
@@ -534,8 +534,7 @@ impl InvoiceEscrow {
                     }
                 }
             }
-
-            // 4. Release the purchase_price collateral back to the seller
+            // Seller receives the full payment amount
             token.transfer(&contract, &data.seller, &amount);
         }
 
