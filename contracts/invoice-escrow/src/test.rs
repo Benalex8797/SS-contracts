@@ -2372,11 +2372,61 @@ fn test_cancel_escrow_already_funded_rejected() {
     );
     client.fund_escrow(&invoice_id, &buyer, &1000);
 
-    // Cannot cancel once funded
+    // Cannot cancel once fully funded (status is Funded)
     let res = client.try_cancel_escrow(&invoice_id, &seller);
-    assert_eq!(res, Err(Ok(Error::EscrowFunded)));
+    assert_eq!(res, Err(Ok(Error::CancelNotAllowed)));
 
     let _ = pt_client;
+}
+
+#[test]
+fn test_cancel_escrow_partially_funded_refunds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin.clone());
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let pt_client = TokenClient::new(&env, &pt_id.address());
+
+    client.initialize(&admin, &0);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_PART");
+
+    pt_asset.mint(&buyer, &1000);
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000i128,
+        &1000i128,
+        &9_999_999u64,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "test_invoice_data"),
+        &Some(500),
+    );
+    client.fund_escrow(&invoice_id, &buyer, &500);
+
+    assert_eq!(pt_client.balance(&buyer), 500);
+    assert_eq!(pt_client.balance(&escrow_id), 500);
+
+    // Cancel while partially funded
+    client.cancel_escrow(&invoice_id, &seller);
+
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Cancelled);
+
+    // Funds should be returned to buyer
+    assert_eq!(pt_client.balance(&escrow_id), 0);
+    assert_eq!(pt_client.balance(&buyer), 1000);
 }
 
 #[test]

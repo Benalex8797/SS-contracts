@@ -178,9 +178,10 @@ impl InvoiceEscrow {
         Ok(())
     }
 
-    /// Cancel an unfunded escrow. Only the seller may cancel, and only while status is Created.
+    /// Cancel an escrow in Created state, refunding any partial funds to the funders.
+    /// Only the seller may cancel, and only while status is Created.
     ///
-    /// Emits `escrow_cancelled` with `(invoice_id, seller)`.
+    /// Emits `escrow_refunded` (if partial funds existed) and `escrow_cancelled`.
     pub fn cancel_escrow(env: Env, invoice_id: Symbol, seller: Address) -> Result<(), Error> {
         seller.require_auth();
         let config = storage::get_config(&env).ok_or(Error::NotInit)?;
@@ -190,8 +191,59 @@ impl InvoiceEscrow {
         if data.seller != seller {
             return Err(Error::Unauthorized);
         }
+        if data.status == EscrowStatus::Cancelled {
+            return Err(Error::EscrowCancelled);
+        }
         if data.status != EscrowStatus::Created {
-            return Err(Error::EscrowFunded);
+            return Err(Error::CancelNotAllowed);
+        }
+
+        if data.funded_amt > 0 {
+            let amount_to_refund = data.funded_amt;
+            let token = token::Client::new(&env, &data.token);
+            let contract = env.current_contract_address();
+            let funder_opt = data.funder.clone();
+
+            if let Some(distributor) = config.payment_distributor.as_ref() {
+                token.transfer(&contract, distributor, &amount_to_refund);
+                env.invoke_contract::<()>(
+                    distributor,
+                    &Symbol::new(&env, DISTRIBUTE_REFUND_FN),
+                    soroban_sdk::vec![
+                        &env,
+                        contract.to_val(),
+                        invoice_id.clone().into_val(&env),
+                        soroban_sdk::vec![
+                            &env,
+                            <Address as IntoVal<Env, soroban_sdk::Val>>::into_val(
+                                &data.token,
+                                &env
+                            ),
+                            <Option<Address> as IntoVal<Env, soroban_sdk::Val>>::into_val(
+                                &funder_opt,
+                                &env,
+                            )
+                        ]
+                        .into_val(&env),
+                        soroban_sdk::vec![&env, amount_to_refund].into_val(&env),
+                        (EscrowStatus::Cancelled as u32).into_val(&env)
+                    ],
+                );
+            } else {
+                if let Some(funder) = &funder_opt {
+                    let funder_amt = storage::get_funder_amount(&env, invoice_id.clone(), funder);
+                    if funder_amt > 0 {
+                        token.transfer(&contract, funder, &funder_amt);
+                    }
+                }
+            }
+
+            env.invoke_contract::<()>(
+                &data.inv_token,
+                &Symbol::new(&env, "set_transfer_locked"),
+                soroban_sdk::vec![&env, contract.to_val(), false.into_val(&env)],
+            );
+            events::escrow_refunded(&env, invoice_id.clone(), amount_to_refund);
         }
         data.status = EscrowStatus::Cancelled;
         storage::set_escrow(&env, invoice_id.clone(), &data);
