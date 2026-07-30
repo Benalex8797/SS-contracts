@@ -236,6 +236,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "funders"
+                    },
+                    "val": {
+                      "vec": []
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "funding_milestone"
                     },
                     "val": "void"

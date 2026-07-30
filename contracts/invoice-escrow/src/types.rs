@@ -72,6 +72,9 @@ pub struct EscrowData {
     pub funded_amt: i128,
     /// Primary funder address (MVP: single funder for now).
     pub funder: Option<soroban_sdk::Address>,
+    /// Every funder that has contributed to this escrow so cleanup can prune their
+    /// contribution records once the escrow reaches a terminal state.
+    pub funders: soroban_sdk::Vec<soroban_sdk::Address>,
     /// Due date (ledger timestamp).
     pub due_dt: u64,
     /// Payment token contract address.

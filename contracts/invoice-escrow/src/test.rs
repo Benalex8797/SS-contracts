@@ -3132,6 +3132,68 @@ fn test_cleanup_escrow_removes_settled_record() {
 }
 
 #[test]
+fn test_cleanup_escrow_removes_all_funder_records() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin.clone());
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_CLEAN4");
+    let amount = 1000;
+
+    payment_token_asset.mint(&buyer_a, &amount);
+    payment_token_asset.mint(&buyer_b, &amount);
+    payment_token_asset.mint(&payer, &(amount * 2));
+
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &(amount * 2),
+        &(amount * 2),
+        &1000000,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "cleanup_multi_funder"),
+        &None,
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer_a, &amount);
+    escrow_client.fund_escrow(&invoice_id, &buyer_b, &amount);
+    escrow_client.record_payment(&invoice_id, &payer, &(amount * 2));
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Settled
+    );
+
+    escrow_client.cleanup_escrow(&invoice_id, &seller);
+
+    let buyer_a_amt = env.as_contract(&escrow_id, || {
+        super::storage::get_funder_amount(&env, invoice_id.clone(), &buyer_a)
+    });
+    let buyer_b_amt = env.as_contract(&escrow_id, || {
+        super::storage::get_funder_amount(&env, invoice_id.clone(), &buyer_b)
+    });
+    assert_eq!(buyer_a_amt, 0);
+    assert_eq!(buyer_b_amt, 0);
+    let result = escrow_client.try_get_escrow(&invoice_id);
+    assert_eq!(result, Err(Ok(Error::EscrowNotFound)));
+}
+
+#[test]
 fn test_cleanup_escrow_rejects_non_terminal_status() {
     let env = Env::default();
     env.mock_all_auths();
@@ -3430,16 +3492,17 @@ fn test_admin_disable_whitelist() {
 #[test]
 fn test_set_whitelist_enabled_requires_admin_auth() {
     let env = Env::default();
+    env.mock_all_auths();
 
     let escrow_id = env.register(InvoiceEscrow, ());
     let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
 
     let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
     escrow_client.initialize(&admin, &300);
 
-    // Without auth, must fail
-    let result = escrow_client.try_set_whitelist_enabled(&admin, &true);
-    assert!(result.is_err());
+    let result = escrow_client.try_set_whitelist_enabled(&non_admin, &true);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
@@ -3485,17 +3548,18 @@ fn test_admin_unwhitelist_buyer() {
 #[test]
 fn test_set_buyer_whitelisted_requires_admin_auth() {
     let env = Env::default();
+    env.mock_all_auths();
 
     let escrow_id = env.register(InvoiceEscrow, ());
     let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
 
     let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
     let buyer = Address::generate(&env);
     escrow_client.initialize(&admin, &300);
 
-    // Without auth, must fail
-    let result = escrow_client.try_set_buyer_whitelisted(&admin, &buyer, &true);
-    assert!(result.is_err());
+    let result = escrow_client.try_set_buyer_whitelisted(&non_admin, &buyer, &true);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
 #[test]
