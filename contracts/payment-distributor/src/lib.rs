@@ -67,6 +67,19 @@ fn release_lock(env: &Env) {
 ///
 /// Issue #132: Rounding losses are allocated to the seller so the total
 /// distribution equals `payment_amount` exactly.
+fn parse_fee_bps(fee_bps: i128) -> Result<u32, Error> {
+    if fee_bps < 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    let fee_bps_u32 = u32::try_from(fee_bps).map_err(|_| Error::InvalidAmount)?;
+    if fee_bps_u32 > MAX_FEE_BPS {
+        return Err(Error::InvalidBps);
+    }
+
+    Ok(fee_bps_u32)
+}
+
 fn compute_split(
     paid_amount: i128,
     already_distributed: i128,
@@ -249,7 +262,7 @@ impl PaymentDistributor {
         let token = addresses.get(0).ok_or(Error::InvalidAmount)?;
         let seller = addresses.get(1).ok_or(Error::InvalidAmount)?;
         let funder = addresses.get(2).ok_or(Error::InvalidAmount)?;
-        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
+        let fee_bps_u32 = parse_fee_bps(amounts.get(3).ok_or(Error::InvalidAmount)?)?;
 
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
@@ -671,7 +684,7 @@ impl PaymentDistributor {
             return Err(Error::InvalidAmount);
         }
 
-        let fee_bps_u32 = amounts.get(3).ok_or(Error::InvalidAmount)? as u32;
+        let fee_bps_u32 = parse_fee_bps(amounts.get(3).ok_or(Error::InvalidAmount)?)?;
         let paid_amount = amounts.get(0).ok_or(Error::InvalidAmount)?;
         let investor_amount = amounts.get(2).ok_or(Error::InvalidAmount)?;
         let state = get_distribution_state(&env, &escrow_contract, &invoice_id);

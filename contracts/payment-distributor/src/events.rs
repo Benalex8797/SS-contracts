@@ -139,4 +139,3 @@ pub fn dust_swept(env: &Env, admin: &Address, token: &Address, to: &Address, amo
     env.events()
         .publish(topics, (admin.clone(), to.clone(), amount));
 }
-

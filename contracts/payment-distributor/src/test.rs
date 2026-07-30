@@ -238,6 +238,52 @@ fn test_refund_distribution_can_only_happen_once() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
+fn test_distribute_payment_rejects_negative_fee_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone(),
+        ],
+        &soroban_sdk::vec![&env, 100i128, 0i128, 0i128, -1i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_distribute_payment_rejects_fee_bps_out_of_u32_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone(),
+        ],
+        &soroban_sdk::vec![&env, 100i128, 0i128, 0i128, (u32::MAX as i128) + 1],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
 fn test_fee_bps_at_maximum_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
