@@ -52,4 +52,6 @@ pub enum Error {
     SignatureExpired = 22,
     /// Funding amount does not meet the required milestone threshold.
     InvalidMilestoneAmount = 23,
+    /// Cannot cancel because escrow is not in the correct state.
+    CancelNotAllowed = 24,
 }

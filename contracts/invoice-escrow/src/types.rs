@@ -50,6 +50,7 @@ pub enum EscrowStatus {
     Settled = 2,
     /// Refunded to investor after due date.
     Refunded = 3,
+    /// Cancelled by seller while in Created state (refunds partial funders if any).
     /// Cancelled by seller while still in Created state and never funded
     /// (locked out once any investor contribution has been received).
     Cancelled = 4,
