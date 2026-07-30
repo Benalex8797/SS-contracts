@@ -25,6 +25,20 @@
 
 set -euo pipefail
 
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -110,6 +124,15 @@ deploy_contract() {
     fi
 
     info "Deploying ${label} from ${wasm} …"
+    
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        contract_id="SIMULATED_${label^^}_ID"
+        contract_id=$(echo "$contract_id" | tr - _ | tr -d - | tr '[:lower:]' '[:upper:]')
+        success "[DRY-RUN] ${label} deployed → ${contract_id}"
+        echo "${contract_id}"
+        return
+    fi
+
     local contract_id
     contract_id=$(soroban contract deploy \
         "${SOROBAN_FLAGS[@]}" \
@@ -175,16 +198,20 @@ info "  decimals     = ${INVOICE_TOKEN_DECIMALS}"
 info "  invoice_id   = ${INVOICE_TOKEN_INVOICE_ID}"
 info "  minter       = ${INVOICE_ESCROW_ID}  (escrow contract)"
 
-soroban contract invoke \
-    "${SOROBAN_FLAGS[@]}" \
-    --id "${INVOICE_TOKEN_ID}" \
-    -- initialize \
-    --admin        "${ADMIN_PUBLIC_KEY}" \
-    --name         "${INVOICE_TOKEN_NAME}" \
-    --symbol       "${INVOICE_TOKEN_SYMBOL}" \
-    --decimals     "${INVOICE_TOKEN_DECIMALS}" \
-    --invoice_id   "${INVOICE_TOKEN_INVOICE_ID}" \
-    --minter       "${INVOICE_ESCROW_ID}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    success "[DRY-RUN] invoice-token initialised"
+else
+    soroban contract invoke \
+        "${SOROBAN_FLAGS[@]}" \
+        --id "${INVOICE_TOKEN_ID}" \
+        -- initialize \
+        --admin        "${ADMIN_PUBLIC_KEY}" \
+        --name         "${INVOICE_TOKEN_NAME}" \
+        --symbol       "${INVOICE_TOKEN_SYMBOL}" \
+        --decimals     "${INVOICE_TOKEN_DECIMALS}" \
+        --invoice_id   "${INVOICE_TOKEN_INVOICE_ID}" \
+        --minter       "${INVOICE_ESCROW_ID}"
+fi
 
 success "invoice-token initialised"
 
@@ -193,12 +220,16 @@ info "Initialising invoice-escrow …"
 info "  admin            = ${ADMIN_PUBLIC_KEY}"
 info "  platform_fee_bps = ${PLATFORM_FEE_BPS}"
 
-soroban contract invoke \
-    "${SOROBAN_FLAGS[@]}" \
-    --id "${INVOICE_ESCROW_ID}" \
-    -- initialize \
-    --admin            "${ADMIN_PUBLIC_KEY}" \
-    --platform_fee_bps "${PLATFORM_FEE_BPS}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    success "[DRY-RUN] invoice-escrow initialised"
+else
+    soroban contract invoke \
+        "${SOROBAN_FLAGS[@]}" \
+        --id "${INVOICE_ESCROW_ID}" \
+        -- initialize \
+        --admin            "${ADMIN_PUBLIC_KEY}" \
+        --platform_fee_bps "${PLATFORM_FEE_BPS}"
+fi
 
 success "invoice-escrow initialised"
 
@@ -206,22 +237,30 @@ success "invoice-escrow initialised"
 info "Initialising payment-distributor …"
 info "  admin = ${ADMIN_PUBLIC_KEY}"
 
-soroban contract invoke \
-    "${SOROBAN_FLAGS[@]}" \
-    --id "${PAYMENT_DISTRIBUTOR_ID}" \
-    -- initialize \
-    --admin "${ADMIN_PUBLIC_KEY}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    success "[DRY-RUN] payment-distributor initialised"
+else
+    soroban contract invoke \
+        "${SOROBAN_FLAGS[@]}" \
+        --id "${PAYMENT_DISTRIBUTOR_ID}" \
+        -- initialize \
+        --admin "${ADMIN_PUBLIC_KEY}"
+fi
 
 success "payment-distributor initialised"
 
 # --- invoice-escrow.set_payment_distributor ---
 info "Wiring invoice-escrow to payment-distributor …"
 
-soroban contract invoke \
-    "${SOROBAN_FLAGS[@]}" \
-    --id "${INVOICE_ESCROW_ID}" \
-    -- set_payment_distributor \
-    --payment_distributor "${PAYMENT_DISTRIBUTOR_ID}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+    success "[DRY-RUN] invoice-escrow wired to payment-distributor"
+else
+    soroban contract invoke \
+        "${SOROBAN_FLAGS[@]}" \
+        --id "${INVOICE_ESCROW_ID}" \
+        -- set_payment_distributor \
+        --payment_distributor "${PAYMENT_DISTRIBUTOR_ID}"
+fi
 
 success "invoice-escrow wired to payment-distributor"
 
