@@ -9,6 +9,21 @@ use soroban_sdk::{
     Address, BytesN, Env, String as SorobanString, Symbol,
 };
 
+fn find_in_invocation(
+    inv: &AuthorizedInvocation,
+    target_contract: &Address,
+    target_fn: &Symbol,
+) -> bool {
+    if let AuthorizedFunction::Contract((contract, fn_name, _)) = &inv.function {
+        if contract == target_contract && fn_name == target_fn {
+            return true;
+        }
+    }
+    inv.sub_invocations
+        .iter()
+        .any(|sub| find_in_invocation(sub, target_contract, target_fn))
+}
+
 fn test_commitment(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0; 32])
 }
@@ -189,10 +204,8 @@ fn test_integration_escrow_keeps_direct_flow_without_distributor() {
 // Issue #163: Mock Contract Call Invocation Verification Tests
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Verify that the correct contract function invocations were authorized
-/// during the settlement flow. Uses `env.auths()` to inspect the recorded
-/// authorization tree and confirm the escrow contract's `distribute_payment`
-/// invocation was properly authorized with matching arguments.
+/// Verify that settlement routes through the distributor when configured,
+/// resulting in correct distribution state recorded by the distributor.
 #[test]
 fn test_integration_verify_auth_distribution_invocations() {
     let env = Env::default();
@@ -205,6 +218,17 @@ fn test_integration_verify_auth_distribution_invocations() {
     ctx.escrow
         .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
 
+    // Verify escrow contract's record_payment was invoked.
+    let auths = env.auths();
+    let escrow_invoked = auths.iter().any(|(_, inv)| {
+        find_in_invocation(inv, &ctx.escrow_id, &Symbol::new(&env, "record_payment"))
+    });
+    assert!(
+        escrow_invoked,
+        "record_payment was not found in authorized invocations"
+    );
+
+    // Verify distributor state was updated by the settlement flow.
     // Verify auth records show the correct contract invocations.
     let auths = env.auths();
     assert!(
@@ -218,6 +242,7 @@ fn test_integration_verify_auth_distribution_invocations() {
         .distributor
         .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
     assert_eq!(state.paid_distributed, 1_000);
+    assert!(!state.refund_distributed);
 }
 
 /// Verify that calling `distribute_payment` with an invalid escrow status
@@ -431,8 +456,8 @@ fn test_integration_edge_case_zero_payment_delta_rejected() {
     assert_eq!(result, Err(Ok(Error::NothingToDistribute)));
 }
 
-/// Verify that the refund distribution authorization is correctly recorded
-/// when a partial-payment-then-refund flow routes through the distributor.
+/// Verify that the refund distribution routes correctly through the distributor
+/// when a partial-payment-then-refund flow uses the distributor.
 #[test]
 fn test_integration_refund_distribution_invocation_verified() {
     let env = Env::default();
