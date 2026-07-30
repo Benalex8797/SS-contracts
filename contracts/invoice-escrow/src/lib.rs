@@ -152,6 +152,7 @@ impl InvoiceEscrow {
             purchase_price,
             funded_amt: 0,
             funder: None,
+            funders: soroban_sdk::Vec::new(&env),
             due_dt: due_date,
             token: payment_token.clone(),
             inv_token: invoice_token.clone(),
@@ -315,6 +316,17 @@ impl InvoiceEscrow {
         storage::set_funder_amount(env, invoice_id.clone(), buyer, new_funder_amt);
 
         data.funded_amt = new_funded;
+
+        let mut already_recorded = false;
+        for funder in data.funders.iter() {
+            if funder == buyer.clone() {
+                already_recorded = true;
+                break;
+            }
+        }
+        if !already_recorded {
+            data.funders.push_back(buyer.clone());
+        }
 
         // MVP: Store the first funder for direct distribution
         if data.funder.is_none() {
@@ -659,10 +671,7 @@ impl InvoiceEscrow {
             EscrowStatus::Settled | EscrowStatus::Refunded | EscrowStatus::Cancelled => {}
             _ => return Err(Error::EscrowNotSettled),
         }
-        if let Some(funder) = &data.funder {
-            storage::set_funder_amount(&env, invoice_id.clone(), funder, 0);
-        }
-        storage::remove_escrow(&env, invoice_id.clone());
+        storage::remove_escrow_state(&env, invoice_id.clone(), &data.funders);
         events::escrow_cleaned_up(&env, invoice_id);
         Ok(())
     }
