@@ -1,4 +1,4 @@
- #![allow(deprecated, unused_variables, dead_code, unused_mut, clippy::all)]
+#![allow(deprecated, unused_variables, dead_code, unused_mut, clippy::all)]
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
@@ -987,15 +987,14 @@ fn test_update_platform_fee_requires_admin_auth() {
     let admin = Address::generate(&env);
     escrow_client.initialize(&admin, &300);
 
-    // With proper auth, update succeeds
     // Clear mock auths so subsequent call has no authorization
     env.set_auths(&[]);
 
     // Without auth, should fail — admin.require_auth() inside update_platform_fee_bps
-    // will produce a host error. We use try_ and assert is_err.
+    // produces a host error.
     let result = escrow_client.try_update_platform_fee_bps(&500);
-    assert_eq!(result, Ok(Ok(())));
-    assert_eq!(escrow_client.get_config().fee_bps, 500);
+    assert!(result.is_err());
+    assert_eq!(escrow_client.get_config().fee_bps, 300);
 }
 
 // ========== Invalid Input Tests ==========
@@ -2426,7 +2425,10 @@ fn test_cancel_escrow_partially_funded_refunds() {
     // Cancel while partially funded should refund the buyer
     client.cancel_escrow(&invoice_id, &seller);
 
-    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Cancelled);
+    assert_eq!(
+        client.get_escrow_status(&invoice_id),
+        EscrowStatus::Cancelled
+    );
     assert_eq!(pt_client.balance(&escrow_id), 0);
     assert_eq!(pt_client.balance(&buyer), 1000);
 }
@@ -2470,7 +2472,10 @@ fn test_cancel_escrow_partially_funded_cancels_and_refunds() {
 
     // Partial funding cancellation should refund and succeed
     client.cancel_escrow(&invoice_id, &seller);
-    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Cancelled);
+    assert_eq!(
+        client.get_escrow_status(&invoice_id),
+        EscrowStatus::Cancelled
+    );
     assert_eq!(pt_client.balance(&buyer), 1000);
 }
 
@@ -2516,14 +2521,13 @@ fn test_set_paused_requires_admin_auth() {
     let admin = Address::generate(&env);
     client.initialize(&admin, &300);
 
-    // With proper auth, pause succeeds
     // Clear mock auths so subsequent call has no authorization
     env.set_auths(&[]);
 
     // Without mocked auth the call must fail
     let result = client.try_set_paused(&true);
-    assert_eq!(result, Ok(Ok(())));
-    assert!(client.paused());
+    assert!(result.is_err());
+    assert!(!client.paused());
 }
 
 #[test]
@@ -3546,11 +3550,6 @@ fn test_fund_escrow_allows_remainder_below_milestone() {
 
 // ── Whitelist Management ──────────────────────────────────────────
 
-#[test]
-#[should_panic(expected = "Error(Auth")]
-fn test_initialize_not_authorized() {
-    let env = Env::default();
-    // Do NOT mock_all_auths() here so that admin.require_auth() fails.
 fn test_admin_enable_whitelist() {
     let env = Env::default();
     env.mock_all_auths();
@@ -4983,7 +4982,7 @@ fn test_error_not_whitelisted() {
         &None,
     );
 
-assert_eq!(
+    assert_eq!(
         escrow_client.try_fund_escrow(&invoice_id, &unwhitelisted_buyer, &1000),
         Err(Ok(Error::NotWhitelisted))
     );

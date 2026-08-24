@@ -7,6 +7,10 @@ use crate::errors::Error;
 pub enum StorageKey {
     Admin,
     Distribution(soroban_sdk::Address, soroban_sdk::Symbol),
+    /// Ordered platform fee tiers.
+    FeeTiers,
+    /// Investor bonus rate in basis points.
+    InvestorBonusBps,
     /// Fee recipient address for platform fees (Issue #122).
     FeeRecipient,
     /// Re-entrancy guard flag for distribution entrypoints (Issue #127).
@@ -24,6 +28,15 @@ pub enum StorageKey {
 pub struct DistributionState {
     pub paid_distributed: i128,
     pub refund_distributed: bool,
+}
+
+/// Platform fee rate for a bounded payment range.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeTier {
+    pub min_amount: i128,
+    pub max_amount: i128,
+    pub fee_bps: u32,
 }
 
 /// Maximum allowed fee in basis points (100% = 10,000 BPS). Issue #124.

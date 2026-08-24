@@ -115,10 +115,12 @@ pub fn set_role_grant(env: &Env, role: &Symbol, account: &Address, granted: bool
     }
 }
 
+#[allow(dead_code)]
 pub fn get_fee_tiers(env: &Env) -> Option<Vec<FeeTier>> {
     env.storage().instance().get(&StorageKey::FeeTiers)
 }
 
+#[allow(dead_code)]
 pub fn set_fee_tiers(env: &Env, tiers: &Vec<FeeTier>) {
     env.storage().instance().set(&StorageKey::FeeTiers, tiers);
 }

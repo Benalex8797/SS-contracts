@@ -1427,11 +1427,6 @@ fn test_distribute_payment_overflow_in_fee_calculation() {
 ///
 /// The distributor must hold >= total_distribution tokens before the call.
 #[test]
-fn test_distribute_split_overflow_in_referral_calculation() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (admin, _distributor_id, distributor) = distributor_only(&env);
-    let (token, asset) = make_token(&env);
 fn test_initialize_and_distribute() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1445,7 +1440,7 @@ fn test_initialize_and_distribute() {
 
     // Bind the escrow so the whitelist check passes.
     distributor.set_escrow_contract(&admin, &escrow);
-    asset.mint(&_distributor_id, &1_430);
+    asset.mint(&distributor_id, &1_430);
     let result = distributor.try_distribute_payment(
         &escrow,
         &invoice_id,
@@ -1548,18 +1543,6 @@ fn test_distribute_split_zero_amount_rejected() {
     env.mock_all_auths();
 
     let (admin, distributor_id, distributor) = distributor_only(&env);
-    let (token, asset) = make_token(&env);
-    asset.mint(&distributor_id, &1_000);
-
-    let escrow = Address::generate(&env);
-    distributor.set_escrow_contract(&admin, &escrow);
-
-    let seller = Address::generate(&env);
-    let funder = Address::generate(&env);
-    let result = distributor.try_distribute_payment(
-        &escrow,
-        &Symbol::new(&env, "INV_ZERO"),
-        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);
@@ -1665,17 +1648,6 @@ fn test_distribute_payment_empty_amounts_vector() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (admin, distributor_id, distributor) = distributor_only(&env);
-    let escrow = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let funder = Address::generate(&env);
-    let invoice_id = Symbol::new(&env, "INV_NEG");
-    let (token, asset) = make_token(&env);
-
-    distributor.set_escrow_contract(&admin, &escrow);
-    asset.mint(&distributor_id, &1_000);
-
-    // paid_amount = -500 → payment_delta = -500 − 0 = -500 ≤ 0
     let (admin, _distributor_id, distributor) = distributor_only(&env);
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
@@ -1960,18 +1932,6 @@ fn test_distribute_multi_asset_with_maximum_recipients() {
     env.mock_all_auths();
 
     let (admin, distributor_id, distributor) = distributor_only(&env);
-    let (token, asset) = make_token(&env);
-    asset.mint(&distributor_id, &1_000);
-
-    let escrow = Address::generate(&env);
-    distributor.set_escrow_contract(&admin, &escrow);
-
-    let seller = Address::generate(&env);
-    let funder = Address::generate(&env);
-    let result = distributor.try_distribute_payment(
-        &escrow,
-        &Symbol::new(&env, "INV_ZERO"),
-        &soroban_sdk::vec![&env, token.address.clone(), seller, funder, admin],
     let escrow = Address::generate(&env);
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);

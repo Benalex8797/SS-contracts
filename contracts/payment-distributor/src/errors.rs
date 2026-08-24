@@ -39,4 +39,14 @@ pub enum Error {
     EmptyBatch = 21,
     /// Batch exceeds the maximum allowed number of entries.
     BatchTooLarge = 22,
+    /// Fee fanout contains more recipients than allowed.
+    TooManyFeeRecipients = 23,
+    /// Fee fanout amounts are invalid.
+    InvalidFeeSplit = 24,
+    /// Investor bonus rate exceeds the maximum.
+    InvalidBonusRate = 25,
+    /// Refund contains more funders than allowed.
+    TooManyRefundRecipients = 26,
+    /// Refund weights are invalid.
+    InvalidRefundWeight = 27,
 }

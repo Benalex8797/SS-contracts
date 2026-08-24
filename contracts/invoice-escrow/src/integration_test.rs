@@ -1233,3 +1233,31 @@ fn test_integration_get_config_returns_correct_values() {
     assert!(!cfg.paused);
     assert!(cfg.payment_distributor.is_none());
 }
+
+// -----------------------------------------------------------------------------
+// 26. Cancellation after partial payment is rejected without changing state
+// -----------------------------------------------------------------------------
+
+#[test]
+fn test_integration_cancel_after_partial_payment_preserves_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let ctx = setup(&env, 300, "INVCPP", 1_000, 1_000);
+    create_and_fund(&ctx, 1_000, 99_999);
+
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &400);
+
+    let result = ctx.escrow.try_cancel_escrow(&ctx.invoice_id, &ctx.seller);
+    assert_eq!(result, Err(Ok(errors::Error::EscrowFunded)));
+
+    let data = ctx.escrow.get_escrow(&ctx.invoice_id);
+    assert_eq!(data.status, EscrowStatus::Funded);
+    assert_eq!(data.funded_amt, 1_000);
+    assert_eq!(data.paid_amt, 400);
+    assert_eq!(ctx.payment_token.balance(&ctx.payer), 600);
+    assert_eq!(ctx.payment_token.balance(&ctx.escrow_id), 600);
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 400);
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 12);
+    assert_eq!(ctx.payment_token.balance(&ctx.buyer), 388);
+    assert!(ctx.inv_token.transfer_locked());
+}
