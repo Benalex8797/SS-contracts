@@ -261,6 +261,172 @@ fn test_set_transfer_locked_unauthorized_fails() {
     assert!(client.transfer_locked());
 }
 
+// ========== Account Freeze Tests ==========
+
+#[test]
+fn test_freeze_account_requires_admin_auth() {
+    let env = Env::default();
+    let (client, _admin, _minter) = setup_token(&env);
+    let account = Address::generate(&env);
+
+    assert!(client.try_freeze_account(&account).is_err());
+    assert!(!client.is_account_frozen(&account));
+}
+
+#[test]
+fn test_freeze_unfreeze_account_lifecycle_and_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+    let account = Address::generate(&env);
+
+    client.freeze_account(&account);
+
+    let freeze_event = env.events().all().events().last().unwrap().clone();
+    assert!(client.is_frozen(&account));
+    let (_contract_addr, topics, data) = parse_event(&env, &freeze_event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "account_frozen"),).into_val(&env)
+    );
+    let event_account: Address = data.try_into_val(&env).unwrap();
+    assert_eq!(event_account, account);
+
+    assert_eq!(
+        client.try_freeze_account(&account),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert!(client.is_account_frozen(&account));
+
+    client.unfreeze_account(&account);
+
+    let unfreeze_event = env.events().all().events().last().unwrap().clone();
+    assert!(!client.is_frozen(&account));
+    let (_contract_addr, topics, data) = parse_event(&env, &unfreeze_event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "account_unfrozen"),).into_val(&env)
+    );
+    let event_account: Address = data.try_into_val(&env).unwrap();
+    assert_eq!(event_account, account);
+
+    assert_eq!(
+        client.try_unfreeze_account(&account),
+        Err(Ok(crate::errors::Error::AccountNotFrozen))
+    );
+    assert!(!client.is_account_frozen(&account));
+}
+
+#[test]
+fn test_frozen_accounts_cannot_transfer_or_receive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    client.set_transfer_locked(&admin, &false);
+    client.mint(&sender, &100, &minter);
+    client.freeze_account(&sender);
+
+    assert_eq!(
+        client.try_transfer(&sender, &recipient, &10),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(client.balance(&sender), 100);
+    assert_eq!(client.balance(&recipient), 0);
+
+    client.unfreeze_account(&sender);
+    client.freeze_account(&recipient);
+    assert_eq!(
+        client.try_transfer(&sender, &recipient, &10),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(client.balance(&sender), 100);
+    assert_eq!(client.balance(&recipient), 0);
+
+    client.unfreeze_account(&recipient);
+    client.transfer(&sender, &recipient, &10);
+    assert_eq!(client.balance(&sender), 90);
+    assert_eq!(client.balance(&recipient), 10);
+}
+
+#[test]
+fn test_frozen_accounts_cannot_approve_burn_or_use_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let expiration = env.ledger().sequence() + 100;
+
+    client.set_transfer_locked(&admin, &false);
+    client.mint(&owner, &100, &minter);
+    client.approve(&owner, &spender, &50, &expiration);
+    client.freeze_account(&owner);
+
+    assert_eq!(
+        client.try_approve(&owner, &spender, &25, &expiration),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(
+        client.try_burn(&owner, &10),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(
+        client.try_transfer_from(&spender, &owner, &recipient, &10),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(
+        client.try_burn_from(&spender, &owner, &10),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(client.balance(&owner), 100);
+    assert_eq!(client.allowance(&owner, &spender), 50);
+
+    client.unfreeze_account(&owner);
+    client.freeze_account(&spender);
+    assert_eq!(
+        client.try_transfer_from(&spender, &owner, &recipient, &10),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(
+        client.try_extend_allowance(&owner, &spender, &(expiration + 1)),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+}
+
+#[test]
+fn test_mint_rejects_frozen_recipient() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+    let frozen = Address::generate(&env);
+    let active = Address::generate(&env);
+
+    client.freeze_account(&frozen);
+    assert_eq!(
+        client.try_mint(&frozen, &10, &minter),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    client.freeze_account(&minter);
+    assert_eq!(
+        client.try_mint(&active, &10, &minter),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+
+    let recipients = soroban_sdk::vec![&env, active.clone(), frozen.clone()];
+    let amounts = soroban_sdk::vec![&env, 10i128, 20i128];
+    assert_eq!(
+        client.try_mint_batch(&recipients, &amounts, &minter),
+        Err(Ok(crate::errors::Error::AccountFrozen))
+    );
+    assert_eq!(client.balance(&active), 0);
+    assert_eq!(client.balance(&frozen), 0);
+    assert_eq!(client.total_supply(), 0);
+}
+
 #[test]
 fn test_transfer_locked_with_sufficient_balance() {
     let env = Env::default();
@@ -1487,6 +1653,13 @@ fn test_storage_key_serialization_roundtrip_history() {
     assert_key_roundtrip(&env, StorageKey::History(addr));
 }
 
+#[test]
+fn test_storage_key_serialization_roundtrip_frozen() {
+    let env = Env::default();
+    let account = Address::generate(&env);
+    assert_key_roundtrip(&env, StorageKey::Frozen(account));
+}
+
 /// All StorageKey variants produce distinct serialized values (no collisions).
 #[test]
 fn test_storage_key_uniqueness_all_variants_distinct() {
@@ -1505,6 +1678,7 @@ fn test_storage_key_uniqueness_all_variants_distinct() {
         StorageKey::RoleGrant(role_admin.clone(), addr_a.clone()),
         StorageKey::Nonce(addr_a.clone()),
         StorageKey::History(addr_a.clone()),
+        StorageKey::Frozen(addr_a.clone()),
     ];
 
     let n = keys.len();
@@ -1544,6 +1718,13 @@ fn test_storage_key_same_variant_different_data_distinct() {
         StorageKey::History(addr.clone()),
         StorageKey::History(other_addr.clone()),
         "History keys with different addresses must differ"
+    );
+
+    // Frozen with different addresses
+    assert_ne!(
+        StorageKey::Frozen(addr.clone()),
+        StorageKey::Frozen(other_addr.clone()),
+        "Frozen keys with different addresses must differ"
     );
 
     // Allowance with different pairs

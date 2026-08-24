@@ -58,6 +58,18 @@ pub fn paused_updated_event(env: &Env, old_value: bool, new_value: bool) {
     );
 }
 
+/// Emit an account freeze event.
+pub fn account_frozen_event(env: &Env, account: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "account_frozen"),), account);
+}
+
+/// Emit an account unfreeze event.
+pub fn account_unfrozen_event(env: &Env, account: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "account_unfrozen"),), account);
+}
+
 /// Emit an allowance expiration extension (topics ["allowance_extended", from, spender], data new_expiration_ledger).
 pub fn allowance_extended_event(
     env: &Env,

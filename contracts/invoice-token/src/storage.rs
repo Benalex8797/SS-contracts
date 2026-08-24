@@ -50,6 +50,24 @@ pub fn set_balance(env: &soroban_sdk::Env, addr: &Address, amount: i128) {
     }
 }
 
+/// Check whether an account is frozen.
+pub fn is_account_frozen(env: &soroban_sdk::Env, account: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::Frozen(account.clone()))
+        .unwrap_or(false)
+}
+
+/// Update an account's frozen state, removing unrestricted entries from storage.
+pub fn set_account_frozen(env: &soroban_sdk::Env, account: &Address, frozen: bool) {
+    let key = StorageKey::Frozen(account.clone());
+    if frozen {
+        env.storage().persistent().set(&key, &true);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
 /// Get allowance (from, spender). Returns 0 if expired or not set.
 pub fn get_allowance(
     env: &soroban_sdk::Env,

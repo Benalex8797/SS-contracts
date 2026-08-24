@@ -41,4 +41,8 @@ pub enum Error {
     BatchLengthMismatch = 17,
     /// Fee basis points exceed maximum.
     InvalidFeeBps = 18,
+    /// The account is frozen and cannot participate in the requested operation.
+    AccountFrozen = 19,
+    /// The account is not frozen.
+    AccountNotFrozen = 20,
 }
