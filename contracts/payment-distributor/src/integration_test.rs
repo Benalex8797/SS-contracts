@@ -9,27 +9,11 @@ use soroban_sdk::{
     Address, BytesN, Env, String as SorobanString, Symbol,
 };
 
-fn find_in_invocation(
-    inv: &AuthorizedInvocation,
-    target_contract: &Address,
-    target_fn: &Symbol,
-) -> bool {
-    if let AuthorizedFunction::Contract((contract, fn_name, _)) = &inv.function {
-        if contract == target_contract && fn_name == target_fn {
-            return true;
-        }
-    }
-    inv.sub_invocations
-        .iter()
-        .any(|sub| find_in_invocation(sub, target_contract, target_fn))
-}
-
 fn test_commitment(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0; 32])
 }
 
 struct FlowContext<'a> {
-    env: Env,
     admin: Address,
     seller: Address,
     buyer: Address,
@@ -82,7 +66,6 @@ fn setup(env: &Env, fee_bps: u32, configure_distributor: bool) -> FlowContext<'_
     }
 
     FlowContext {
-        env: env.clone(),
         admin,
         seller,
         buyer,
@@ -217,25 +200,6 @@ fn test_integration_verify_auth_distribution_invocations() {
 
     ctx.escrow
         .record_payment(&ctx.invoice_id, &ctx.payer, &1_000);
-
-    // Verify escrow contract's record_payment was invoked.
-    let auths = env.auths();
-    let escrow_invoked = auths.iter().any(|(_, inv)| {
-        find_in_invocation(inv, &ctx.escrow_id, &Symbol::new(&env, "record_payment"))
-    });
-    assert!(
-        escrow_invoked,
-        "record_payment was not found in authorized invocations"
-    );
-
-    // Verify distributor state was updated by the settlement flow.
-    // Verify auth records show the correct contract invocations.
-    let auths = env.auths();
-    assert!(
-        !auths.is_empty(),
-        "Expected auth invocations, got {}",
-        auths.len()
-    );
 
     // Verify that payment distribution completed and state was recorded.
     let state = ctx

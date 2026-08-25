@@ -18,7 +18,6 @@ use errors::Error;
 const ESCROW_STATUS_FUNDED: u32 = 1;
 const ESCROW_STATUS_SETTLED: u32 = 2;
 const ESCROW_STATUS_REFUNDED: u32 = 3;
-const MAX_FEE_BPS: u32 = 10_000;
 const MAX_FANOUT_RECIPIENTS: u32 = 10;
 const MAX_REFUND_RECIPIENTS: u32 = 10;
 
@@ -327,11 +326,18 @@ impl PaymentDistributor {
         if seller_amount > 0 {
             token_client.transfer(&contract_addr, &seller, &seller_amount);
         }
-        if investor_amount > 0 {
-            token_client.transfer(&contract_addr, &funder, &investor_amount);
+        if investor_payout > 0 {
+            token_client.transfer(&contract_addr, &funder, &investor_payout);
         }
-        if platform_fee > 0 {
-            token_client.transfer(&contract_addr, &fee_recipient, &platform_fee);
+        for i in 0..fanout_recipients.len() {
+            let recipient = fanout_recipients.get(i).ok_or(Error::InvalidFeeSplit)?;
+            let amount = fanout_amounts.get(i).ok_or(Error::InvalidFeeSplit)?;
+            if amount > 0 {
+                token_client.transfer(&contract_addr, &recipient, &amount);
+            }
+        }
+        if admin_fee > 0 {
+            token_client.transfer(&contract_addr, &fee_recipient, &admin_fee);
         }
 
         state.paid_distributed = paid_amount;
@@ -483,12 +489,24 @@ impl PaymentDistributor {
             return Err(Error::InsufficientBalance);
         }
 
-        token_client.transfer(&contract_addr, &funder, &refund_amount);
+        for i in 0..recipients.len() {
+            let recipient = recipients.get(i).ok_or(Error::InvalidAmount)?;
+            let amount = recipient_amounts.get(i).ok_or(Error::InvalidAmount)?;
+            if amount > 0 {
+                token_client.transfer(&contract_addr, &recipient, &amount);
+            }
+        }
 
         state.refund_distributed = true;
         storage::set_distribution(&env, &escrow_contract, &invoice_id, &state);
 
-        events::refund_distributed(&env, &escrow_contract, &invoice_id, &funder, refund_amount);
+        events::refund_distributed(
+            &env,
+            &escrow_contract,
+            &invoice_id,
+            &recipients,
+            &recipient_amounts,
+        );
         release_lock(&env);
         Ok(())
     }

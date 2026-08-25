@@ -76,6 +76,7 @@ pub fn refund_distributed(
         .publish(topics, (recipients.clone(), amounts.clone()));
 }
 
+#[allow(dead_code)]
 pub fn platform_fee_updated(env: &Env, admin: &Address, tiers: &Vec<FeeTier>) {
     let topics = (Symbol::new(env, "platform_fee_updated"),);
     env.events().publish(topics, (admin.clone(), tiers.clone()));
