@@ -5428,3 +5428,236 @@ fn test_settlement_at_exact_due_date_emits_correct_events() {
     assert_eq!(status_event_data.1, EscrowStatus::Settled as u32);
     assert_eq!(status_event_data.2, due_date);
 }
+
+// ========== Escrow Storage Key TTL Extension Verification Tests (#150) ==========
+
+#[test]
+fn test_escrow_storage_key_ttl_extended_on_create_and_read() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin);
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_TTL_01");
+    let amount = 5000i128;
+    let due_date = 60000u64;
+
+    // Verify storage has no escrow prior to creation
+    env.as_contract(&escrow_id, || {
+        assert!(!storage::has_escrow(&env, invoice_id.clone()));
+        assert!(storage::get_escrow(&env, invoice_id.clone()).is_none());
+    });
+
+    // Create escrow (triggers set_escrow -> extend_ttl)
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &amount,
+        &amount,
+        &due_date,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "ttl_create_test"),
+        &None,
+    );
+
+    // Verify storage persistence and retrieval
+    env.as_contract(&escrow_id, || {
+        assert!(storage::has_escrow(&env, invoice_id.clone()));
+        let escrow = storage::get_escrow(&env, invoice_id.clone());
+        assert!(escrow.is_some());
+        let data = escrow.unwrap();
+        assert_eq!(data.inv_id, invoice_id);
+        assert_eq!(data.seller, seller);
+        assert_eq!(data.debtor, payer);
+        assert_eq!(data.face_value, amount);
+        assert_eq!(data.status, EscrowStatus::Created);
+    });
+
+    // Reading status / details invokes get_escrow -> extend_ttl
+    let status = escrow_client.get_escrow_status(&invoice_id);
+    assert_eq!(status, EscrowStatus::Created);
+
+    let details = escrow_client.get_escrow(&invoice_id);
+    assert_eq!(details.inv_id, invoice_id);
+    assert_eq!(details.face_value, amount);
+    assert_eq!(details.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_escrow_ttl_extension_during_full_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin);
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &250);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_TTL_LIFE");
+    let amount = 10_000i128;
+    let due_date = 100_000u64;
+
+    payment_token_asset.mint(&buyer, &amount);
+    payment_token_asset.mint(&payer, &amount);
+
+    // 1. Create escrow
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &amount,
+        &amount,
+        &due_date,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "ttl_lifecycle_test"),
+        &None,
+    );
+
+    // 2. Fund escrow (set_escrow called on state transition)
+    escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
+    assert_eq!(escrow_client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+
+    // Verify persistent state holds Funded
+    env.as_contract(&escrow_id, || {
+        let data = storage::get_escrow(&env, invoice_id.clone()).expect("escrow exists");
+        assert_eq!(data.status, EscrowStatus::Funded);
+        assert_eq!(data.funded_amt, amount);
+    });
+
+    // 3. Partial payment
+    let partial_amount = 4_000i128;
+    escrow_client.record_payment(&invoice_id, &payer, &partial_amount);
+
+    env.as_contract(&escrow_id, || {
+        let data = storage::get_escrow(&env, invoice_id.clone()).expect("escrow exists");
+        assert_eq!(data.paid_amt, partial_amount);
+        assert_eq!(data.status, EscrowStatus::Funded);
+    });
+
+    // 4. Final payment to Settle
+    let remaining_amount = 6_000i128;
+    escrow_client.record_payment(&invoice_id, &payer, &remaining_amount);
+    assert_eq!(escrow_client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+
+    // Verify persistent state persists as Settled
+    env.as_contract(&escrow_id, || {
+        let data = storage::get_escrow(&env, invoice_id.clone()).expect("escrow exists");
+        assert_eq!(data.status, EscrowStatus::Settled);
+        assert_eq!(data.paid_amt, amount);
+    });
+}
+
+#[test]
+fn test_escrow_ttl_extension_nonexistent_key_error_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    escrow_client.initialize(&admin, &300);
+
+    let non_existent_id = Symbol::new(&env, "NON_EXISTENT");
+
+    // Negative assertions on non-existent storage key
+    env.as_contract(&escrow_id, || {
+        assert!(!storage::has_escrow(&env, non_existent_id.clone()));
+        assert!(storage::get_escrow(&env, non_existent_id.clone()).is_none());
+    });
+
+    let status_res = escrow_client.try_get_escrow_status(&non_existent_id);
+    assert_eq!(status_res, Err(Ok(Error::EscrowNotFound)));
+
+    let details_res = escrow_client.try_get_escrow(&non_existent_id);
+    assert_eq!(details_res, Err(Ok(Error::EscrowNotFound)));
+}
+
+#[test]
+fn test_escrow_storage_ttl_persistence_after_cleanup() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let payment_token_admin = Address::generate(&env);
+    let payment_token_id = env.register_stellar_asset_contract_v2(payment_token_admin);
+    let payment_token = TokenClient::new(&env, &payment_token_id.address());
+    let payment_token_asset = AssetClient::new(&env, &payment_token_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "INV_CLEANUP_TTL");
+    let amount = 1000i128;
+    let due_date = 50000u64;
+
+    payment_token_asset.mint(&buyer, &amount);
+    payment_token_asset.mint(&payer, &amount);
+
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &amount,
+        &amount,
+        &due_date,
+        &payment_token.address,
+        &inv_token_id,
+        &test_commitment(&env, "cleanup_ttl"),
+        &None,
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
+    escrow_client.record_payment(&invoice_id, &payer, &amount);
+    assert_eq!(escrow_client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+
+    // Verify storage has escrow
+    env.as_contract(&escrow_id, || {
+        assert!(storage::has_escrow(&env, invoice_id.clone()));
+    });
+
+    // Cleanup escrow
+    escrow_client.cleanup_escrow(&invoice_id, &admin);
+
+    // Verify persistent storage entry is completely removed
+    env.as_contract(&escrow_id, || {
+        assert!(!storage::has_escrow(&env, invoice_id.clone()));
+        assert!(storage::get_escrow(&env, invoice_id.clone()).is_none());
+    });
+
+    // Subsequent status check fails with EscrowNotFound
+    assert_eq!(
+        escrow_client.try_get_escrow_status(&invoice_id),
+        Err(Ok(Error::EscrowNotFound))
+    );
+}
+
