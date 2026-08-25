@@ -39,6 +39,157 @@ fn setup_token(env: &Env) -> (InvoiceTokenClient<'_>, Address, Address) {
     (client, admin, minter)
 }
 
+fn zero_account_address(env: &Env) -> Address {
+    Address::try_from_val(
+        env,
+        &soroban_sdk::xdr::ScVal::Address(soroban_sdk::xdr::ScAddress::Account(
+            soroban_sdk::xdr::AccountId(soroban_sdk::xdr::PublicKey::PublicKeyTypeEd25519(
+                soroban_sdk::xdr::Uint256([0; 32]),
+            )),
+        )),
+    )
+    .unwrap()
+}
+
+fn zero_contract_address(env: &Env) -> Address {
+    Address::try_from_val(
+        env,
+        &soroban_sdk::xdr::ScVal::Address(soroban_sdk::xdr::ScAddress::Contract(
+            soroban_sdk::xdr::ContractId(soroban_sdk::xdr::Hash([0; 32])),
+        )),
+    )
+    .unwrap()
+}
+
+macro_rules! assert_invalid_address {
+    ($result:expr) => {
+        assert_eq!($result, Err(Ok(crate::errors::Error::InvalidAddress)))
+    };
+}
+
+#[test]
+fn test_zero_address_detection_covers_account_and_contract_addresses() {
+    let env = Env::default();
+
+    assert!(crate::types::is_zero_address(
+        &env,
+        &zero_account_address(&env)
+    ));
+    assert!(crate::types::is_zero_address(
+        &env,
+        &zero_contract_address(&env)
+    ));
+    assert!(!crate::types::is_zero_address(
+        &env,
+        &Address::generate(&env)
+    ));
+}
+
+#[test]
+fn test_initialize_rejects_zero_admin_and_minter() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice INV-001");
+    let symbol = SorobanString::from_str(&env, "INV001");
+    let invoice_id = Symbol::new(&env, "inv_001");
+
+    assert_invalid_address!(client.try_initialize(
+        &zero_account_address(&env),
+        &name,
+        &symbol,
+        &7,
+        &invoice_id,
+        &minter,
+    ));
+    assert_invalid_address!(client.try_initialize(
+        &admin,
+        &name,
+        &symbol,
+        &7,
+        &invoice_id,
+        &zero_contract_address(&env),
+    ));
+}
+
+#[test]
+fn test_address_queries_reject_zero_addresses() {
+    let env = Env::default();
+    let (client, admin, _minter) = setup_token(&env);
+    let zero = zero_contract_address(&env);
+    let role = Symbol::new(&env, "admin");
+
+    assert_invalid_address!(client.try_balance(&zero));
+
+    let ids = soroban_sdk::vec![&env, admin.clone(), zero.clone()];
+    assert_invalid_address!(client.try_balance_batch(&ids));
+
+    assert_invalid_address!(client.try_allowance(&zero, &admin));
+    assert_invalid_address!(client.try_allowance(&admin, &zero));
+    assert_invalid_address!(client.try_get_nonce(&zero));
+    assert_invalid_address!(client.try_is_account_frozen(&zero));
+    assert_invalid_address!(client.try_is_frozen(&zero));
+    assert_invalid_address!(client.try_has_role(&role, &zero));
+    assert_invalid_address!(client.try_get_token_history(&zero));
+}
+
+#[test]
+fn test_token_operations_reject_every_zero_address_parameter() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let account = Address::generate(&env);
+    let other = Address::generate(&env);
+    let zero = zero_account_address(&env);
+    let expiration = env.ledger().sequence() + 100;
+
+    assert_invalid_address!(client.try_transfer(&zero, &account, &1));
+    assert_invalid_address!(client.try_transfer(&account, &zero, &1));
+
+    assert_invalid_address!(client.try_approve(&zero, &account, &1, &expiration));
+    assert_invalid_address!(client.try_approve(&account, &zero, &1, &expiration));
+    assert_invalid_address!(client.try_extend_allowance(&zero, &account, &expiration));
+    assert_invalid_address!(client.try_extend_allowance(&account, &zero, &expiration));
+    assert_invalid_address!(client.try_revoke_approval(&zero, &account));
+    assert_invalid_address!(client.try_revoke_approval(&account, &zero));
+
+    assert_invalid_address!(client.try_transfer_from(&zero, &account, &other, &1));
+    assert_invalid_address!(client.try_transfer_from(&account, &zero, &other, &1));
+    assert_invalid_address!(client.try_transfer_from(&account, &other, &zero, &1));
+
+    assert_invalid_address!(client.try_burn(&zero, &1));
+    assert_invalid_address!(client.try_burn_from(&zero, &account, &1));
+    assert_invalid_address!(client.try_burn_from(&account, &zero, &1));
+
+    assert_invalid_address!(client.try_mint(&zero, &1, &minter));
+    assert_invalid_address!(client.try_mint(&account, &1, &zero));
+
+    let recipients = soroban_sdk::vec![&env, account.clone(), zero.clone()];
+    let amounts = soroban_sdk::vec![&env, 1i128, 1i128];
+    assert_invalid_address!(client.try_mint_batch(&recipients, &amounts, &minter));
+
+    let recipients = soroban_sdk::vec![&env, account.clone()];
+    let amounts = soroban_sdk::vec![&env, 1i128];
+    assert_invalid_address!(client.try_mint_batch(&recipients, &amounts, &zero));
+
+    assert_invalid_address!(client.try_set_transfer_locked(&zero, &false));
+    assert_invalid_address!(client.try_set_minter(&zero));
+
+    assert_invalid_address!(client.try_freeze_account(&zero));
+    assert_invalid_address!(client.try_unfreeze_account(&zero));
+    assert_invalid_address!(client.try_set_fee_bps(&zero, &100));
+
+    let role = Symbol::new(&env, "admin");
+    assert_invalid_address!(client.try_set_role_admin(&zero, &role, &account));
+    assert_invalid_address!(client.try_set_role_admin(&admin, &role, &zero));
+    assert_invalid_address!(client.try_grant_role(&zero, &role, &account));
+    assert_invalid_address!(client.try_grant_role(&admin, &role, &zero));
+    assert_invalid_address!(client.try_revoke_role(&zero, &role, &account));
+    assert_invalid_address!(client.try_revoke_role(&admin, &role, &zero));
+}
+
 // ========== Original Tests ==========
 
 #[test]

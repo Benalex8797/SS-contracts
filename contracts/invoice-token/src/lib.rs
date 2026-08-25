@@ -15,7 +15,7 @@ mod types;
 use soroban_sdk::{contract, contractimpl, Address, Env, String as SorobanString, Symbol, Vec};
 
 use crate::errors::Error;
-use crate::types::{OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
+use crate::types::{is_zero_address, OwnershipHistoryRecord, TokenMetadata, MAX_DECIMALS};
 const ADMIN_ROLE: &str = "admin";
 const MINTER_ROLE: &str = "minter";
 const PAUSER_ROLE: &str = "pauser";
@@ -24,6 +24,24 @@ const TRANSFER_LOCKER_ROLE: &str = "transfer_locker";
 fn ensure_account_not_frozen(env: &Env, account: &Address) -> Result<(), Error> {
     if storage::is_account_frozen(env, account) {
         return Err(Error::AccountFrozen);
+    }
+    Ok(())
+}
+
+fn ensure_non_zero_address(env: &Env, address: &Address) -> Result<(), Error> {
+    if is_zero_address(env, address) {
+        return Err(Error::InvalidAddress);
+    }
+    Ok(())
+}
+
+fn ensure_non_zero_addresses<T, I>(env: &Env, addresses: I) -> Result<(), Error>
+where
+    T: core::borrow::Borrow<Address>,
+    I: IntoIterator<Item = T>,
+{
+    for address in addresses {
+        ensure_non_zero_address(env, core::borrow::Borrow::borrow(&address))?;
     }
     Ok(())
 }
@@ -43,6 +61,7 @@ impl InvoiceToken {
         invoice_id: Symbol,
         minter: Address,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&admin, &minter])?;
         if storage::get_metadata(&env).is_some() {
             return Err(Error::AlreadyInit);
         }
@@ -112,12 +131,14 @@ impl InvoiceToken {
     }
 
     pub fn balance(env: Env, id: Address) -> Result<i128, Error> {
+        ensure_non_zero_address(&env, &id)?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(storage::get_balance(&env, &id))
     }
 
     /// Return balances for a batch of addresses, preserving the input order.
     pub fn balance_batch(env: Env, ids: Vec<Address>) -> Result<Vec<i128>, Error> {
+        ensure_non_zero_addresses(&env, ids.iter())?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let mut balances = Vec::new(&env);
         for id in ids.iter() {
@@ -127,6 +148,7 @@ impl InvoiceToken {
     }
 
     pub fn allowance(env: Env, from: Address, spender: Address) -> Result<i128, Error> {
+        ensure_non_zero_addresses(&env, [&from, &spender])?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let ledger = env.ledger().sequence();
         Ok(storage::get_allowance(&env, &from, &spender, ledger))
@@ -136,6 +158,7 @@ impl InvoiceToken {
 
     /// Returns the current nonce for the given address (used in EIP-2612-style permits).
     pub fn get_nonce(env: Env, account: Address) -> Result<u64, Error> {
+        ensure_non_zero_address(&env, &account)?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let nonce = storage::get_nonce(&env, &account);
         events::nonce_queried_event(&env, &account, nonce);
@@ -147,6 +170,7 @@ impl InvoiceToken {
     /// Transfer amount from `from` to `to`. Requires `from` auth.
     /// When a fee is configured, the fee is deducted from `from` and sent to the admin.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&from, &to])?;
         from.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -225,6 +249,7 @@ impl InvoiceToken {
         amount: i128,
         expiration_ledger: u32,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&from, &spender])?;
         from.require_auth();
         if amount < 0 {
             return Err(Error::InvalidAmount);
@@ -253,6 +278,7 @@ impl InvoiceToken {
         spender: Address,
         new_expiration_ledger: u32,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&from, &spender])?;
         from.require_auth();
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         if meta.paused {
@@ -276,6 +302,7 @@ impl InvoiceToken {
 
     /// Revoke `spender`'s allowance. Requires `from` authorization.
     pub fn revoke_approval(env: Env, from: Address, spender: Address) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&from, &spender])?;
         from.require_auth();
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         if meta.paused {
@@ -294,6 +321,7 @@ impl InvoiceToken {
         to: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&spender, &from, &to])?;
         spender.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -381,6 +409,7 @@ impl InvoiceToken {
 
     /// Burn amount from `from`. Requires `from` auth.
     pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &from)?;
         from.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -405,6 +434,7 @@ impl InvoiceToken {
 
     /// Burn from `from` using spender's allowance. Requires `spender` auth.
     pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&spender, &from])?;
         spender.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -449,6 +479,7 @@ impl InvoiceToken {
     /// Mint tokens to `to`. Callable only by admin or minter (escrow).
     /// `by` must be admin or minter and must authorize the call.
     pub fn mint(env: Env, to: Address, amount: i128, by: Address) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&to, &by])?;
         by.require_auth();
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         if meta.paused {
@@ -482,6 +513,8 @@ impl InvoiceToken {
         amounts: Vec<i128>,
         by: Address,
     ) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &by)?;
+        ensure_non_zero_addresses(&env, to.iter())?;
         by.require_auth();
         if to.len() != amounts.len() {
             return Err(Error::BatchLengthMismatch);
@@ -524,6 +557,7 @@ impl InvoiceToken {
     /// Set transfer lock. Callable by admin or minter (escrow contract).
     /// When true, only admin can transfer; when false, all holders can transfer.
     pub fn set_transfer_locked(env: Env, caller: Address, locked: bool) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &caller)?;
         caller.require_auth();
         let mut meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         if caller != meta.admin && caller != meta.minter {
@@ -538,6 +572,7 @@ impl InvoiceToken {
 
     /// Set minter address (admin only).
     pub fn set_minter(env: Env, new_minter: Address) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &new_minter)?;
         let mut meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let old_minter = meta.minter.clone();
         meta.admin.require_auth();
@@ -600,6 +635,7 @@ impl InvoiceToken {
 
     /// Freeze an account. Admin only.
     pub fn freeze_account(env: Env, account: Address) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &account)?;
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         meta.admin.require_auth();
         if storage::is_account_frozen(&env, &account) {
@@ -612,6 +648,7 @@ impl InvoiceToken {
 
     /// Unfreeze an account. Admin only.
     pub fn unfreeze_account(env: Env, account: Address) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &account)?;
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         meta.admin.require_auth();
         if !storage::is_account_frozen(&env, &account) {
@@ -624,6 +661,7 @@ impl InvoiceToken {
 
     /// Check whether an account is frozen.
     pub fn is_account_frozen(env: Env, account: Address) -> Result<bool, Error> {
+        ensure_non_zero_address(&env, &account)?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(storage::is_account_frozen(&env, &account))
     }
@@ -643,6 +681,7 @@ impl InvoiceToken {
 
     /// Set fee basis points. Admin only. Valid range: 0..=10_000.
     pub fn set_fee_bps(env: Env, caller: Address, new_bps: i128) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &caller)?;
         caller.require_auth();
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         if caller != meta.admin {
@@ -672,6 +711,7 @@ impl InvoiceToken {
         role: Symbol,
         new_admin: Address,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&caller, &new_admin])?;
         caller.require_auth();
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let current_admin = storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)?;
@@ -691,6 +731,7 @@ impl InvoiceToken {
         role: Symbol,
         account: Address,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&caller, &account])?;
         caller.require_auth();
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let role_admin = storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)?;
@@ -709,6 +750,7 @@ impl InvoiceToken {
         role: Symbol,
         account: Address,
     ) -> Result<(), Error> {
+        ensure_non_zero_addresses(&env, [&caller, &account])?;
         caller.require_auth();
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         let role_admin = storage::get_role_admin(&env, &role).ok_or(Error::RoleNotGranted)?;
@@ -722,6 +764,7 @@ impl InvoiceToken {
 
     /// Check whether an account has been granted a role.
     pub fn has_role(env: Env, role: Symbol, account: Address) -> Result<bool, Error> {
+        ensure_non_zero_address(&env, &account)?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(storage::has_role(&env, &role, &account))
     }
@@ -733,6 +776,7 @@ impl InvoiceToken {
         env: Env,
         account: Address,
     ) -> Result<soroban_sdk::Vec<OwnershipHistoryRecord>, Error> {
+        ensure_non_zero_address(&env, &account)?;
         storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(storage::get_token_history(&env, &account))
     }
