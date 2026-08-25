@@ -1,10 +1,24 @@
 //! Data types for the invoice token contract (SEP-41).
 //! Storage key names respect Soroban's 10-character limit for contracttype.
 
-use soroban_sdk::contracttype;
+use soroban_sdk::{contracttype, xdr::ToXdr, Address, Env};
 
 /// Largest supported number of fractional digits for an invoice sub-asset.
 pub const MAX_DECIMALS: u32 = 18;
+
+/// Return whether an address has an all-zero account or contract payload.
+pub fn is_zero_address(env: &Env, address: &Address) -> bool {
+    let encoded = address.to_xdr(env);
+    let (payload_start, payload_end) = match encoded.len() {
+        // ScVal::Address + ScAddress::Account + PublicKey::Ed25519.
+        44 => (12, 44),
+        // ScVal::Address + ScAddress::Contract.
+        40 => (8, 40),
+        _ => return false,
+    };
+
+    (payload_start..payload_end).all(|index| encoded.get(index) == Some(0))
+}
 
 /// Storage key enum for instance and persistent storage.
 #[contracttype]

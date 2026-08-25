@@ -45,4 +45,6 @@ pub enum Error {
     AccountFrozen = 19,
     /// The account is not frozen.
     AccountNotFrozen = 20,
+    /// An address parameter contains an all-zero account or contract address.
+    InvalidAddress = 21,
 }
