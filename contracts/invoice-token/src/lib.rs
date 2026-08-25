@@ -21,6 +21,13 @@ const MINTER_ROLE: &str = "minter";
 const PAUSER_ROLE: &str = "pauser";
 const TRANSFER_LOCKER_ROLE: &str = "transfer_locker";
 
+fn ensure_account_not_frozen(env: &Env, account: &Address) -> Result<(), Error> {
+    if storage::is_account_frozen(env, account) {
+        return Err(Error::AccountFrozen);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct InvoiceToken;
 
@@ -148,6 +155,8 @@ impl InvoiceToken {
         if meta.paused {
             return Err(Error::Paused);
         }
+        ensure_account_not_frozen(&env, &from)?;
+        ensure_account_not_frozen(&env, &to)?;
         if meta.transfer_locked && from != meta.admin {
             return Err(Error::TransferLocked);
         }
@@ -161,6 +170,9 @@ impl InvoiceToken {
         } else {
             0
         };
+        if fee_amount > 0 {
+            ensure_account_not_frozen(&env, &meta.admin)?;
+        }
 
         let total_debit = amount.checked_add(fee_amount).ok_or(Error::Overflow)?;
 
@@ -221,6 +233,8 @@ impl InvoiceToken {
         if meta.paused {
             return Err(Error::Paused);
         }
+        ensure_account_not_frozen(&env, &from)?;
+        ensure_account_not_frozen(&env, &spender)?;
         let ledger = env.ledger().sequence();
         if amount != 0 && expiration_ledger < ledger {
             return Err(Error::InvalidExpiration);
@@ -244,6 +258,8 @@ impl InvoiceToken {
         if meta.paused {
             return Err(Error::Paused);
         }
+        ensure_account_not_frozen(&env, &from)?;
+        ensure_account_not_frozen(&env, &spender)?;
         let allow =
             storage::get_allowance_data(&env, &from, &spender).ok_or(Error::AllowanceNotFound)?;
         let ledger = env.ledger().sequence();
@@ -286,6 +302,9 @@ impl InvoiceToken {
         if meta.paused {
             return Err(Error::Paused);
         }
+        ensure_account_not_frozen(&env, &spender)?;
+        ensure_account_not_frozen(&env, &from)?;
+        ensure_account_not_frozen(&env, &to)?;
         if meta.transfer_locked && from != meta.admin {
             return Err(Error::TransferLocked);
         }
@@ -308,6 +327,9 @@ impl InvoiceToken {
         } else {
             0
         };
+        if fee_amount > 0 {
+            ensure_account_not_frozen(&env, &meta.admin)?;
+        }
 
         let total_debit = amount.checked_add(fee_amount).ok_or(Error::Overflow)?;
 
@@ -367,6 +389,7 @@ impl InvoiceToken {
         if meta.paused {
             return Err(Error::Paused);
         }
+        ensure_account_not_frozen(&env, &from)?;
         let balance = storage::get_balance(&env, &from);
         if balance < amount {
             return Err(Error::InsufficientBalance);
@@ -390,6 +413,8 @@ impl InvoiceToken {
         if meta.paused {
             return Err(Error::Paused);
         }
+        ensure_account_not_frozen(&env, &spender)?;
+        ensure_account_not_frozen(&env, &from)?;
         let ledger = env.ledger().sequence();
         let allow = storage::get_allowance_data(&env, &from, &spender)
             .ok_or(Error::InsufficientAllowance)?;
@@ -432,9 +457,11 @@ impl InvoiceToken {
         if by != meta.admin && by != meta.minter {
             return Err(Error::Unauthorized);
         }
+        ensure_account_not_frozen(&env, &by)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        ensure_account_not_frozen(&env, &to)?;
         let new_balance = storage::get_balance(&env, &to)
             .checked_add(amount)
             .ok_or(Error::Overflow)?;
@@ -466,6 +493,7 @@ impl InvoiceToken {
         if by != meta.admin && by != meta.minter {
             return Err(Error::Unauthorized);
         }
+        ensure_account_not_frozen(&env, &by)?;
         // Validate amounts and compute total
         let mut total_amount: i128 = 0;
         for i in 0..amounts.len() {
@@ -476,8 +504,9 @@ impl InvoiceToken {
             if amount == 0 {
                 continue;
             }
-            total_amount = total_amount.checked_add(amount).ok_or(Error::Overflow)?;
             let recipient = to.get(i).unwrap();
+            ensure_account_not_frozen(&env, &recipient)?;
+            total_amount = total_amount.checked_add(amount).ok_or(Error::Overflow)?;
             let new_bal = storage::get_balance(&env, &recipient)
                 .checked_add(amount)
                 .ok_or(Error::Overflow)?;
@@ -565,6 +594,43 @@ impl InvoiceToken {
     pub fn paused(env: Env) -> Result<bool, Error> {
         let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
         Ok(meta.paused)
+    }
+
+    // ---------- Account restrictions ----------
+
+    /// Freeze an account. Admin only.
+    pub fn freeze_account(env: Env, account: Address) -> Result<(), Error> {
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        meta.admin.require_auth();
+        if storage::is_account_frozen(&env, &account) {
+            return Err(Error::AccountFrozen);
+        }
+        storage::set_account_frozen(&env, &account, true);
+        events::account_frozen_event(&env, &account);
+        Ok(())
+    }
+
+    /// Unfreeze an account. Admin only.
+    pub fn unfreeze_account(env: Env, account: Address) -> Result<(), Error> {
+        let meta = storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        meta.admin.require_auth();
+        if !storage::is_account_frozen(&env, &account) {
+            return Err(Error::AccountNotFrozen);
+        }
+        storage::set_account_frozen(&env, &account, false);
+        events::account_unfrozen_event(&env, &account);
+        Ok(())
+    }
+
+    /// Check whether an account is frozen.
+    pub fn is_account_frozen(env: Env, account: Address) -> Result<bool, Error> {
+        storage::get_metadata(&env).ok_or(Error::NotInit)?;
+        Ok(storage::is_account_frozen(&env, &account))
+    }
+
+    /// Check whether an account is frozen.
+    pub fn is_frozen(env: Env, account: Address) -> Result<bool, Error> {
+        Self::is_account_frozen(env, account)
     }
 
     // ---------- Issue #113: Fee management ----------

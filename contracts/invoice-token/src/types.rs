@@ -28,6 +28,8 @@ pub enum StorageKey {
     Nonce(soroban_sdk::Address),
     /// Persistent: ownership history records for a token holder.
     History(soroban_sdk::Address),
+    /// Persistent: whether an account is restricted from token operations.
+    Frozen(soroban_sdk::Address),
 }
 
 /// Token metadata and admin config (instance storage).
