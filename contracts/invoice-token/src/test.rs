@@ -2163,3 +2163,215 @@ fn test_storage_key_role_grant_cross_role_distinct() {
         "Role B must still be granted after revoking role A"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #147: Comprehensive Unit Tests for Invoice Token Pause/Unpause State Switch
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Verify the full lifecycle of pausing and unpausing the invoice token contract.
+/// All state-mutating operations (mint, mint_batch, transfer, transfer_from, approve,
+/// extend_allowance, revoke_approval, burn, burn_from) must be blocked when paused,
+/// and must immediately succeed again when unpaused.
+#[test]
+fn test_pause_unpause_state_switch_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+
+    let holder_a = Address::generate(&env);
+    let holder_b = Address::generate(&env);
+    let spender = Address::generate(&env);
+
+    // Initial setup: mint to holder_a and holder_b, unlock transfers
+    client.mint(&holder_a, &1000, &minter);
+    client.mint(&holder_b, &500, &minter);
+    client.set_transfer_locked(&admin, &false);
+
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&holder_a, &spender, &400, &expiration);
+
+    // Initially unpaused
+    assert_eq!(client.paused(), false);
+
+    // 1. Pause contract
+    client.set_paused(&true);
+    assert_eq!(client.paused(), true);
+
+    // Verify all operations fail with Error::Paused
+    assert_eq!(
+        client.try_transfer(&holder_a, &holder_b, &50),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_transfer_from(&spender, &holder_a, &holder_b, &50),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_approve(&holder_a, &spender, &600, &(expiration + 50)),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_extend_allowance(&holder_a, &spender, &(expiration + 50)),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_revoke_approval(&holder_a, &spender),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_mint(&holder_a, &200, &minter),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    let recipients = soroban_sdk::vec![&env, holder_a.clone(), holder_b.clone()];
+    let amounts = soroban_sdk::vec![&env, 100i128, 100i128];
+    assert_eq!(
+        client.try_mint_batch(&recipients, &amounts, &minter),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_burn(&holder_a, &50),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+    assert_eq!(
+        client.try_burn_from(&spender, &holder_a, &50),
+        Err(Ok(crate::errors::Error::Paused))
+    );
+
+    // Verify state was not mutated during paused attempts
+    assert_eq!(client.balance(&holder_a), 1000);
+    assert_eq!(client.balance(&holder_b), 500);
+    assert_eq!(client.total_supply(), 1500);
+    assert_eq!(client.allowance(&holder_a, &spender), 400);
+
+    // 2. Unpause contract
+    client.set_paused(&false);
+    assert_eq!(client.paused(), false);
+
+    // Verify operations succeed after unpausing
+    client.transfer(&holder_a, &holder_b, &100);
+    assert_eq!(client.balance(&holder_a), 900);
+    assert_eq!(client.balance(&holder_b), 600);
+
+    client.transfer_from(&spender, &holder_a, &holder_b, &100);
+    assert_eq!(client.balance(&holder_a), 800);
+    assert_eq!(client.balance(&holder_b), 700);
+    assert_eq!(client.allowance(&holder_a, &spender), 300);
+
+    client.extend_allowance(&holder_a, &spender, &(expiration + 50));
+    client.mint(&holder_a, &200, &minter);
+    assert_eq!(client.balance(&holder_a), 1000);
+    assert_eq!(client.total_supply(), 1700);
+
+    client.mint_batch(&recipients, &amounts, &minter);
+    assert_eq!(client.balance(&holder_a), 1100);
+    assert_eq!(client.balance(&holder_b), 800);
+    assert_eq!(client.total_supply(), 1900);
+
+    client.burn(&holder_a, &100);
+    assert_eq!(client.balance(&holder_a), 1000);
+    assert_eq!(client.total_supply(), 1800);
+
+    client.burn_from(&spender, &holder_a, &100);
+    assert_eq!(client.balance(&holder_a), 900);
+    assert_eq!(client.allowance(&holder_a, &spender), 200);
+    assert_eq!(client.total_supply(), 1700);
+
+    client.revoke_approval(&holder_a, &spender);
+    assert_eq!(client.allowance(&holder_a, &spender), 0);
+}
+
+/// Verify state persistence across multiple pause/unpause toggle cycles.
+#[test]
+fn test_pause_unpause_repeated_toggles_state_persistence() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+
+    let holder = Address::generate(&env);
+    client.mint(&holder, &500, &minter);
+
+    for _ in 0..3 {
+        // Toggle on
+        client.set_paused(&true);
+        assert_eq!(client.paused(), true);
+        assert_eq!(client.balance(&holder), 500);
+        assert_eq!(client.total_supply(), 500);
+
+        // Toggle off
+        client.set_paused(&false);
+        assert_eq!(client.paused(), false);
+        assert_eq!(client.balance(&holder), 500);
+        assert_eq!(client.total_supply(), 500);
+    }
+}
+
+/// Verify setting pause state without admin auth fails.
+#[test]
+fn test_set_paused_non_admin_unauthorized() {
+    let env = Env::default();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    // Call without admin mock auth should fail
+    let result = client.try_set_paused(&true);
+    assert!(result.is_err());
+}
+
+/// Verify calling set_paused with the same value behaves idempotently.
+#[test]
+fn test_set_paused_idempotent_switch() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    assert_eq!(client.paused(), false);
+
+    // Unpause when already unpaused
+    client.set_paused(&false);
+    assert_eq!(client.paused(), false);
+
+    // Pause
+    client.set_paused(&true);
+    assert_eq!(client.paused(), true);
+
+    // Pause again when already paused
+    client.set_paused(&true);
+    assert_eq!(client.paused(), true);
+
+    // Unpause
+    client.set_paused(&false);
+    assert_eq!(client.paused(), false);
+}
+
+/// Verify event emission when pausing and unpausing.
+#[test]
+fn test_pause_unpause_event_emission() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    // 1. Pause
+    client.set_paused(&true);
+    let events = env.events().all();
+    let event = events.events().last().unwrap();
+    let (_contract_addr, topics, data) = parse_event(&env, event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "paused_updated"),).into_val(&env)
+    );
+    let (old_val, new_val): (bool, bool) = data.try_into_val(&env).unwrap();
+    assert_eq!(old_val, false);
+    assert_eq!(new_val, true);
+
+    // 2. Unpause
+    client.set_paused(&false);
+    let events = env.events().all();
+    let event = events.events().last().unwrap();
+    let (_contract_addr, topics, data) = parse_event(&env, event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "paused_updated"),).into_val(&env)
+    );
+    let (old_val, new_val): (bool, bool) = data.try_into_val(&env).unwrap();
+    assert_eq!(old_val, true);
+    assert_eq!(new_val, false);
+}
