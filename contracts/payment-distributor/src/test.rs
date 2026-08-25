@@ -243,6 +243,8 @@ fn test_distribute_payment_rejects_negative_fee_bps() {
     env.mock_all_auths();
 
     let ctx = setup(&env, 500, true);
+    ctx.payment_asset.mint(&ctx.distributor_id, &1_000);
+
     let result = ctx.distributor.try_distribute_payment(
         &ctx.escrow_id,
         &ctx.invoice_id,
@@ -258,6 +260,13 @@ fn test_distribute_payment_rejects_negative_fee_bps() {
     );
 
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 1_000);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        0
+    );
 }
 
 #[test]
@@ -266,6 +275,8 @@ fn test_distribute_payment_rejects_fee_bps_out_of_u32_range() {
     env.mock_all_auths();
 
     let ctx = setup(&env, 500, true);
+    ctx.payment_asset.mint(&ctx.distributor_id, &1_000);
+
     let result = ctx.distributor.try_distribute_payment(
         &ctx.escrow_id,
         &ctx.invoice_id,
@@ -281,6 +292,45 @@ fn test_distribute_payment_rejects_fee_bps_out_of_u32_range() {
     );
 
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 1_000);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        0
+    );
+}
+
+#[test]
+fn test_distribute_payment_rejects_max_u32_fee_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    ctx.payment_asset.mint(&ctx.distributor_id, &1_000);
+
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone(),
+        ],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, u32::MAX as i128,],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidBps)));
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 1_000);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        0
+    );
 }
 
 #[test]
@@ -299,6 +349,12 @@ fn test_fee_bps_at_maximum_succeeds() {
     assert_eq!(ctx.payment_token.balance(&ctx.seller), 1_000); // Seller receives payment
     assert_eq!(ctx.payment_token.balance(&ctx.buyer), 0);
     assert_eq!(ctx.payment_token.balance(&ctx.admin), 1_000);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        1_000
+    );
 }
 
 #[test]
@@ -306,12 +362,31 @@ fn test_fee_bps_exceeding_maximum_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let escrow_id = env.register(InvoiceEscrow, ());
-    let escrow = InvoiceEscrowClient::new(&env, &escrow_id);
-    let admin = Address::generate(&env);
+    let ctx = setup(&env, 500, true);
+    ctx.payment_asset.mint(&ctx.distributor_id, &1_000);
 
-    let result = escrow.try_initialize(&admin, &10_001);
-    assert!(result.is_err());
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            ctx.payment_token.address.clone(),
+            ctx.seller.clone(),
+            ctx.buyer.clone(),
+            ctx.admin.clone(),
+        ],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 10_001i128],
+        &2u32,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidBps)));
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 1_000);
+    assert_eq!(
+        ctx.distributor
+            .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id)
+            .paid_distributed,
+        0
+    );
 }
 
 #[test]
@@ -1389,22 +1464,16 @@ fn test_sweep_dust_nothing_to_sweep() {
 fn test_distribute_payment_overflow_in_fee_calculation() {
     let env = Env::default();
     env.mock_all_auths();
+
     let (admin, distributor_id, distributor) = distributor_only(&env);
     let (token, asset) = make_token(&env);
-    asset.mint(&distributor_id, &i128::MAX);
     let escrow = Address::generate(&env);
     distributor.set_escrow_contract(&admin, &escrow);
     let invoice_id = Symbol::new(&env, "OVERFLOW");
     let seller = Address::generate(&env);
     let funder = Address::generate(&env);
-    let invoice_id = Symbol::new(&env, "OVERFLOW");
-    let (token, asset) = make_token(&env);
+    asset.mint(&distributor_id, &i128::MAX);
 
-    distributor.set_escrow_contract(&admin, &escrow);
-    let large_amount = i128::MAX / 2;
-    asset.mint(&distributor_id, &large_amount);
-
-    // Use i128::MAX amounts which should trigger overflow errors in fee calculation
     let result = distributor.try_distribute_payment(
         &escrow,
         &invoice_id,
@@ -1412,7 +1481,15 @@ fn test_distribute_payment_overflow_in_fee_calculation() {
         &soroban_sdk::vec![&env, i128::MAX, i128::MAX, 0i128, 10_000u32 as i128],
         &2u32,
     );
-    assert!(result.is_err());
+
+    assert_eq!(result, Err(Ok(Error::Overflow)));
+    assert_eq!(token.balance(&distributor_id), i128::MAX);
+    assert_eq!(
+        distributor
+            .get_distribution_state(&escrow, &invoice_id)
+            .paid_distributed,
+        0
+    );
 }
 
 /// Verify that a freshly initialized distributor can receive tokens and
@@ -2273,7 +2350,20 @@ fn test_fuzz_dynamic_fee_rate_calculation_invariants() {
     distributor.initialize(&admin);
 
     let paid_amounts: [i128; 14] = [
-        1, 2, 7, 10, 99, 100, 333, 1_000, 9_999, 10_000, 100_000, 1_000_000, 10_000_000, 1_000_000_000_000,
+        1,
+        2,
+        7,
+        10,
+        99,
+        100,
+        333,
+        1_000,
+        9_999,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        1_000_000_000_000,
     ];
     let investor_amounts: [i128; 6] = [0, 1, 50, 100, 5_000, 500_000];
     let fee_bps_values: [u32; 15] = [
@@ -2290,7 +2380,13 @@ fn test_fuzz_dynamic_fee_rate_calculation_invariants() {
                 let preview = distributor.calculate_distribution_splits(
                     &escrow,
                     &inv_sym,
-                    &soroban_sdk::vec![&env, token.clone(), seller.clone(), funder.clone(), seller.clone()],
+                    &soroban_sdk::vec![
+                        &env,
+                        token.clone(),
+                        seller.clone(),
+                        funder.clone(),
+                        seller.clone()
+                    ],
                     &soroban_sdk::vec![&env, *paid, 0i128, *inv_amt, *fee_bps as i128],
                 );
 
@@ -2311,7 +2407,10 @@ fn test_fuzz_dynamic_fee_rate_calculation_invariants() {
             }
         }
     }
-    assert!(counter >= 1000, "fuzz test must cover extensive input combinations");
+    assert!(
+        counter >= 1000,
+        "fuzz test must cover extensive input combinations"
+    );
 }
 
 #[test]
@@ -2330,7 +2429,14 @@ fn test_fuzz_dynamic_fee_rate_out_of_bounds_rejection() {
     distributor.initialize(&admin);
 
     let invalid_fee_bps_values: [i128; 8] = [
-        10_001, 10_002, 10_500, 20_000, 50_000, 100_000, 1_000_000, u32::MAX as i128,
+        10_001,
+        10_002,
+        10_500,
+        20_000,
+        50_000,
+        100_000,
+        1_000_000,
+        u32::MAX as i128,
     ];
 
     for invalid_bps in invalid_fee_bps_values.iter() {
@@ -2338,7 +2444,13 @@ fn test_fuzz_dynamic_fee_rate_out_of_bounds_rejection() {
         let result = distributor.try_calculate_distribution_splits(
             &escrow,
             &inv_sym,
-            &soroban_sdk::vec![&env, token.clone(), seller.clone(), funder.clone(), seller.clone()],
+            &soroban_sdk::vec![
+                &env,
+                token.clone(),
+                seller.clone(),
+                funder.clone(),
+                seller.clone()
+            ],
             &soroban_sdk::vec![&env, 10_000i128, 0i128, 500i128, *invalid_bps],
         );
         assert_eq!(
@@ -2364,8 +2476,7 @@ fn test_fuzz_dynamic_fee_rate_execution_and_state_persistence() {
     let expected_fee = 10_000i128 * 750 / 10_000; // 750
     let total_required = paid_amount + investor_amount + expected_fee; // 12750
 
-    ctx.payment_asset
-        .mint(&ctx.distributor_id, &total_required);
+    ctx.payment_asset.mint(&ctx.distributor_id, &total_required);
 
     ctx.distributor.distribute_payment(
         &ctx.escrow_id,
@@ -2461,4 +2572,3 @@ fn test_fuzz_dynamic_fee_incremental_partial_payments() {
         .get_distribution_state(&ctx.escrow_id, &invoice_id);
     assert_eq!(state.paid_distributed, cumulative_2);
 }
-

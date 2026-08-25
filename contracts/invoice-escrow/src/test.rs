@@ -5539,7 +5539,10 @@ fn test_escrow_ttl_extension_during_full_lifecycle() {
 
     // 2. Fund escrow (set_escrow called on state transition)
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
-    assert_eq!(escrow_client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Funded
+    );
 
     // Verify persistent state holds Funded
     env.as_contract(&escrow_id, || {
@@ -5561,7 +5564,10 @@ fn test_escrow_ttl_extension_during_full_lifecycle() {
     // 4. Final payment to Settle
     let remaining_amount = 6_000i128;
     escrow_client.record_payment(&invoice_id, &payer, &remaining_amount);
-    assert_eq!(escrow_client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Settled
+    );
 
     // Verify persistent state persists as Settled
     env.as_contract(&escrow_id, || {
@@ -5638,7 +5644,10 @@ fn test_escrow_storage_ttl_persistence_after_cleanup() {
     );
     escrow_client.fund_escrow(&invoice_id, &buyer, &amount);
     escrow_client.record_payment(&invoice_id, &payer, &amount);
-    assert_eq!(escrow_client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Settled
+    );
 
     // Verify storage has escrow
     env.as_contract(&escrow_id, || {
@@ -5660,4 +5669,3 @@ fn test_escrow_storage_ttl_persistence_after_cleanup() {
         Err(Ok(Error::EscrowNotFound))
     );
 }
-
