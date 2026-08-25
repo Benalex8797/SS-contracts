@@ -5669,3 +5669,1643 @@ fn test_escrow_storage_ttl_persistence_after_cleanup() {
         Err(Ok(Error::EscrowNotFound))
     );
 }
+
+// ============================================================================
+// COMPREHENSIVE EDGE-CASE TESTS  (#174 follow-up)
+// Covers all previously uncovered error paths, event emissions, state
+// persistence, and boundary conditions identified in the gap analysis.
+// ============================================================================
+
+// ── Helpers shared across the new tests ─────────────────────────────────────
+
+/// Build a fully-funded escrow environment ready for settlement or further operations.
+/// Returns `(escrow_id, client, admin, seller, buyer, payer, token_client, invoice_id, due_date)`.
+fn funded_escrow_env(
+    env: &Env,
+    fee_bps: u32,
+    amount: i128,
+    due_date: u64,
+) -> (
+    Address,
+    InvoiceEscrowClient<'_>,
+    Address,
+    Address,
+    Address,
+    Address,
+    soroban_sdk::token::Client<'_>,
+    Symbol,
+) {
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let client = InvoiceEscrowClient::new(env, &escrow_id);
+    let admin = Address::generate(env);
+    let seller = Address::generate(env);
+    let buyer = Address::generate(env);
+    let payer = Address::generate(env);
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+    let pt_admin = Address::generate(env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin.clone());
+    let pt_asset = AssetClient::new(env, &pt_id.address());
+    let pt_client = soroban_sdk::token::Client::new(env, &pt_id.address());
+
+    client.initialize(&admin, &fee_bps);
+
+    pt_asset.mint(&buyer, &amount);
+    pt_asset.mint(&payer, &amount);
+
+    let invoice_id = Symbol::new(env, "INV_NEW");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &amount,
+        &amount,
+        &due_date,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(env, "edge_case_helper"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &amount);
+
+    (
+        escrow_id,
+        client,
+        admin,
+        seller,
+        buyer,
+        payer,
+        unsafe { core::mem::transmute(pt_client) },
+        invoice_id,
+        // due_date is returned via the binding below — caller can use it
+    )
+}
+
+// NOTE: funded_escrow_env above returns an 8-tuple; due_date is already known
+// from the call site so callers supply it. The tuple omits it to stay concise.
+
+// ── 1. fund_escrow_signed emits escrow_fund_sig event ───────────────────────
+
+#[test]
+fn test_fund_escrow_signed_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_FSIG");
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "signed_event_test"),
+        &None,
+    );
+
+    let nonce: u64 = 42;
+    let expiry: u64 = u64::MAX;
+    let amount: i128 = 1000;
+
+    escrow_client.fund_escrow_signed(&invoice_id, &buyer, &amount, &nonce, &expiry);
+
+    // Assert escrow_fund_sig event is emitted
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_fund_sig")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_fund_sig event");
+
+    let (_addr, topics, data) = parse_event(&env, event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "escrow_fund_sig"),).into_val(&env)
+    );
+
+    // Data: (invoice_id, buyer, amount, nonce)
+    let event_data: (Symbol, Address, i128, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data.0, invoice_id);
+    assert_eq!(event_data.1, buyer);
+    assert_eq!(event_data.2, amount);
+    assert_eq!(event_data.3, nonce);
+}
+
+// ── 2. fund_escrow_signed: expiry exactly equals current timestamp is accepted
+//        (contract checks `current_ts > expiry`, so equal is valid) ─────────
+
+#[test]
+fn test_fund_escrow_signed_expiry_exact_timestamp_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_EXPBND");
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "expiry_boundary"),
+        &None,
+    );
+
+    let ts: u64 = 500;
+    env.ledger().with_mut(|li| li.timestamp = ts);
+
+    // expiry == current_ts means current_ts > expiry is false → accepted
+    escrow_client.fund_escrow_signed(&invoice_id, &buyer, &1000, &1, &ts);
+
+    assert_eq!(
+        escrow_client.get_escrow_status(&invoice_id),
+        EscrowStatus::Funded
+    );
+}
+
+// ── 3. fund_escrow_signed: expiry one second before current → SignatureExpired
+
+#[test]
+fn test_fund_escrow_signed_expiry_one_second_before_current_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_EXPONE");
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "expiry_one_sec"),
+        &None,
+    );
+
+    let ts: u64 = 1000;
+    env.ledger().with_mut(|li| li.timestamp = ts);
+
+    // expiry = ts - 1 means current_ts(1000) > expiry(999) → rejected
+    let result = escrow_client.try_fund_escrow_signed(&invoice_id, &buyer, &1000, &1, &(ts - 1));
+    assert_eq!(result, Err(Ok(Error::SignatureExpired)));
+}
+
+// ── 4. Nonce persists and is readable after fund_escrow_signed ───────────────
+
+#[test]
+fn test_fund_escrow_signed_nonce_stored_and_readable() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    escrow_client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &2000);
+
+    let invoice_id = Symbol::new(&env, "INV_NONCE");
+    escrow_client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &2000,
+        &2000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "nonce_storage"),
+        &None,
+    );
+
+    // Before any signed fund, nonce should be 0
+    let nonce_before = env.as_contract(&escrow_id, || {
+        storage::get_nonce(&env, &buyer)
+    });
+    assert_eq!(nonce_before, 0);
+
+    let used_nonce: u64 = 77;
+    escrow_client.fund_escrow_signed(&invoice_id, &buyer, &2000, &used_nonce, &u64::MAX);
+
+    // After signed fund, nonce should be stored as 77
+    let nonce_after = env.as_contract(&escrow_id, || {
+        storage::get_nonce(&env, &buyer)
+    });
+    assert_eq!(nonce_after, used_nonce);
+}
+
+// ── 5. set_payment_distributor emits distributor_updated event ───────────────
+
+#[test]
+fn test_set_payment_distributor_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let distributor = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+    client.set_payment_distributor(&distributor);
+
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "distributor_updated")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected distributor_updated event");
+
+    let (_addr, topics, data) = parse_event(&env, event);
+    // Topic structure: (Symbol, new_distributor)
+    let topic_sym: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    let topic_addr: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic_sym, Symbol::new(&env, "distributor_updated"));
+    assert_eq!(topic_addr, distributor);
+
+    // Data: had_previous_distributor = false (first set)
+    let had_prev: bool = data.try_into_val(&env).unwrap();
+    assert!(!had_prev);
+}
+
+// ── 6. set_payment_distributor second call: had_previous = true ──────────────
+
+#[test]
+fn test_set_payment_distributor_event_has_previous_flag() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let dist_a = Address::generate(&env);
+    let dist_b = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+    client.set_payment_distributor(&dist_a);
+    client.set_payment_distributor(&dist_b);
+
+    let events = env.events().all();
+    // Most recent distributor_updated event
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "distributor_updated")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected distributor_updated event");
+
+    let (_addr, _topics, data) = parse_event(&env, event);
+    let had_prev: bool = data.try_into_val(&env).unwrap();
+    // Second set: had_previous_distributor should be true
+    assert!(had_prev);
+}
+
+// ── 7. set_payment_distributor: non-admin is rejected ────────────────────────
+
+#[test]
+fn test_set_payment_distributor_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+
+    // Clear all auths — next call must fail due to missing admin.require_auth()
+    env.set_auths(&[]);
+
+    let distributor = Address::generate(&env);
+    let result = client.try_set_payment_distributor(&distributor);
+    assert!(result.is_err());
+
+    // Config must be unchanged (no distributor set)
+    // Re-mock for the read
+    env.mock_all_auths();
+    let config = client.get_config();
+    assert_eq!(config.payment_distributor, None);
+}
+
+// ── 8. cancel_escrow on already-Cancelled escrow → EscrowCancelled ───────────
+
+#[test]
+fn test_cancel_escrow_already_cancelled_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, seller, _admin, invoice_id) = setup_escrow_created(&env);
+
+    // First cancel
+    client.cancel_escrow(&invoice_id, &seller);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Cancelled);
+
+    // Second cancel must fail
+    let result = client.try_cancel_escrow(&invoice_id, &seller);
+    assert_eq!(result, Err(Ok(Error::EscrowCancelled)));
+}
+
+// ── 9. cancel_escrow on Settled escrow → CancelNotAllowed ────────────────────
+
+#[test]
+fn test_cancel_escrow_on_settled_escrow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &0);
+    pt_asset.mint(&buyer, &1000);
+    pt_asset.mint(&payer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_CANS");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "cancel_settled"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+    client.record_payment(&invoice_id, &payer, &1000);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+
+    // Attempt to cancel a settled escrow
+    let result = client.try_cancel_escrow(&invoice_id, &seller);
+    assert_eq!(result, Err(Ok(Error::CancelNotAllowed)));
+
+    // State must remain Settled
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Settled);
+}
+
+// ── 10. cancel_escrow on Refunded escrow → CancelNotAllowed ──────────────────
+
+#[test]
+fn test_cancel_escrow_on_refunded_escrow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+    let due_date: u64 = 1000;
+
+    client.initialize(&admin, &0);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_CANR");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "cancel_refunded"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+    env.ledger().with_mut(|li| li.timestamp = due_date + 1);
+    client.refund(&invoice_id);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Refunded);
+
+    // Attempt to cancel a refunded escrow
+    let result = client.try_cancel_escrow(&invoice_id, &seller);
+    assert_eq!(result, Err(Ok(Error::CancelNotAllowed)));
+
+    // State must remain Refunded
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Refunded);
+}
+
+// ── 11. cancel_escrow while contract is paused → Paused ──────────────────────
+
+#[test]
+fn test_cancel_escrow_while_paused_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+
+    let invoice_id = Symbol::new(&env, "INV_CAN_P");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "cancel_paused"),
+        &None,
+    );
+
+    client.set_paused(&true);
+
+    let result = client.try_cancel_escrow(&invoice_id, &seller);
+    assert_eq!(result, Err(Ok(Error::Paused)));
+
+    // Escrow must remain in Created state
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Created);
+}
+
+// ── 12. refund on Refunded escrow → RefundNotAllowed ─────────────────────────
+
+#[test]
+fn test_refund_on_already_refunded_escrow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+    let due_date: u64 = 1000;
+
+    client.initialize(&admin, &0);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_DBL_REF");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "double_refund"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+    env.ledger().with_mut(|li| li.timestamp = due_date + 1);
+    client.refund(&invoice_id);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Refunded);
+
+    // Second refund must be rejected
+    let result = client.try_refund(&invoice_id);
+    assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
+
+    // State must still be Refunded (not changed by failed call)
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Refunded);
+}
+
+// ── 13. cleanup_escrow on Funded escrow → EscrowNotSettled ───────────────────
+
+#[test]
+fn test_cleanup_escrow_on_funded_escrow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_CLN_FD");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "cleanup_funded"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+
+    let result = client.try_cleanup_escrow(&invoice_id, &seller);
+    assert_eq!(result, Err(Ok(Error::EscrowNotSettled)));
+
+    // State unchanged
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+}
+
+// ── 14. cleanup_escrow emits escrow_cleaned event ────────────────────────────
+
+#[test]
+fn test_cleanup_escrow_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+
+    let invoice_id = Symbol::new(&env, "INV_CLN_EV");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "cleanup_event"),
+        &None,
+    );
+    client.cancel_escrow(&invoice_id, &seller);
+    client.cleanup_escrow(&invoice_id, &seller);
+
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_cleaned")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_cleaned event");
+
+    let (_addr, topics, data) = parse_event(&env, event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "escrow_cleaned"),).into_val(&env)
+    );
+
+    // Data is the invoice_id symbol
+    let event_inv_id: Symbol = data.try_into_val(&env).unwrap();
+    assert_eq!(event_inv_id, invoice_id);
+}
+
+// ── 15. paused() view returns NotInit when contract is uninitialized ──────────
+
+#[test]
+fn test_paused_view_returns_not_init_when_uninitialized() {
+    let env = Env::default();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let result = client.try_paused();
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+// ── 16. update_platform_fee_bps at exact boundary 10000 is allowed ───────────
+
+#[test]
+fn test_update_platform_fee_bps_boundary_10000_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+
+    // 10000 bps == 100% which is the maximum allowed value
+    client.update_platform_fee_bps(&10_000);
+
+    let config = client.get_config();
+    assert_eq!(config.fee_bps, 10_000);
+}
+
+// ── 17. initialize with fee_bps exactly 10000 is allowed ─────────────────────
+
+#[test]
+fn test_initialize_fee_bps_boundary_10000_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+
+    // 10000 is valid (max)
+    client.initialize(&admin, &10_000);
+
+    let config = client.get_config();
+    assert_eq!(config.fee_bps, 10_000);
+}
+
+// ── 18. escrow_status_changed emitted at Created during create_escrow ─────────
+
+#[test]
+fn test_escrow_status_changed_event_at_created() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+
+    let invoice_id = Symbol::new(&env, "INV_SC_CRE");
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "status_created"),
+        &None,
+    );
+
+    let events = env.events().all();
+    let event = events
+        .events()
+        .iter()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_status_changed")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected escrow_status_changed event at Created");
+
+    let (_addr, _topics, data) = parse_event(&env, event);
+    let event_data: (Symbol, u32, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data.0, invoice_id);
+    assert_eq!(event_data.1, EscrowStatus::Created as u32);
+    assert_eq!(event_data.2, 100u64);
+}
+
+// ── 19. escrow_status_changed emitted at Funded during fund_escrow ────────────
+
+#[test]
+fn test_escrow_status_changed_event_at_funded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_SC_FND");
+    let fund_ts: u64 = 200;
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "status_funded"),
+        &None,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = fund_ts);
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    let events = env.events().all();
+    let funded_status_event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            if topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_status_changed")
+                })
+                .unwrap_or(false)
+            {
+                // Check that this carries the Funded status
+                let (_a, _t, data) = parse_event(&env, e);
+                let event_data: Option<(Symbol, u32, u64)> = data.try_into_val(&env).ok();
+                event_data
+                    .map(|d| d.1 == EscrowStatus::Funded as u32)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .expect("expected escrow_status_changed with Funded status");
+
+    let (_addr, _topics, data) = parse_event(&env, funded_status_event);
+    let event_data: (Symbol, u32, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data.0, invoice_id);
+    assert_eq!(event_data.1, EscrowStatus::Funded as u32);
+    assert_eq!(event_data.2, fund_ts);
+}
+
+// ── 20. escrow_status_changed emitted at Refunded during refund ───────────────
+
+#[test]
+fn test_escrow_status_changed_event_at_refunded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+    let due_date: u64 = 500;
+
+    client.initialize(&admin, &0);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_SC_REF");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "status_refunded"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    let refund_ts: u64 = due_date + 100;
+    env.ledger().with_mut(|li| li.timestamp = refund_ts);
+    client.refund(&invoice_id);
+
+    let events = env.events().all();
+    let refund_status_event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            if topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_status_changed")
+                })
+                .unwrap_or(false)
+            {
+                let (_a, _t, data) = parse_event(&env, e);
+                let event_data: Option<(Symbol, u32, u64)> = data.try_into_val(&env).ok();
+                event_data
+                    .map(|d| d.1 == EscrowStatus::Refunded as u32)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .expect("expected escrow_status_changed with Refunded status");
+
+    let (_addr, _topics, data) = parse_event(&env, refund_status_event);
+    let event_data: (Symbol, u32, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data.0, invoice_id);
+    assert_eq!(event_data.1, EscrowStatus::Refunded as u32);
+    assert_eq!(event_data.2, refund_ts);
+}
+
+// ── 21. escrow_status_changed emitted at Cancelled during cancel_escrow ───────
+
+#[test]
+fn test_escrow_status_changed_event_at_cancelled() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, seller, _admin, invoice_id) = setup_escrow_created(&env);
+
+    let cancel_ts: u64 = 77;
+    env.ledger().with_mut(|li| li.timestamp = cancel_ts);
+    client.cancel_escrow(&invoice_id, &seller);
+
+    let events = env.events().all();
+    let cancel_status_event = events
+        .events()
+        .iter()
+        .rev()
+        .find(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            if topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_status_changed")
+                })
+                .unwrap_or(false)
+            {
+                let (_a, _t, data) = parse_event(&env, e);
+                let event_data: Option<(Symbol, u32, u64)> = data.try_into_val(&env).ok();
+                event_data
+                    .map(|d| d.1 == EscrowStatus::Cancelled as u32)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .expect("expected escrow_status_changed with Cancelled status");
+
+    let (_addr, _topics, data) = parse_event(&env, cancel_status_event);
+    let event_data: (Symbol, u32, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(event_data.0, invoice_id);
+    assert_eq!(event_data.1, EscrowStatus::Cancelled as u32);
+    assert_eq!(event_data.2, cancel_ts);
+}
+
+// ── 22. Multi-funder partial funding then refund (MVP single-funder path) ─────
+//
+// Two funders each contribute half of the purchase_price.  The MVP direct path
+// in refund() only pays back data.funder (the primary / first funder).
+// buyer_b's contribution is tracked in storage but is NOT returned in the
+// direct refund path — it remains in the escrow contract until a distributor
+// or cleanup handles it.  This test documents the actual contract behaviour
+// so regressions are caught if the refund logic changes.
+
+#[test]
+fn test_multi_funder_partial_funding_then_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let pt_client = soroban_sdk::token::Client::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+    let due_date: u64 = 2000;
+
+    client.initialize(&admin, &0); // 0% fee simplifies maths
+
+    pt_asset.mint(&buyer_a, &500);
+    pt_asset.mint(&buyer_b, &500);
+
+    let invoice_id = Symbol::new(&env, "INV_MF_REF");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due_date,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "multi_funder_refund"),
+        &None,
+    );
+
+    // buyer_a funds first (becomes primary funder), buyer_b funds second
+    client.fund_escrow(&invoice_id, &buyer_a, &500);
+    client.fund_escrow(&invoice_id, &buyer_b, &500);
+
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+    // Both funders' tokens are now held by the escrow
+    assert_eq!(pt_client.balance(&escrow_id), 1000);
+
+    env.ledger().with_mut(|li| li.timestamp = due_date + 1);
+    client.refund(&invoice_id);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Refunded);
+
+    // MVP direct path: refund amount = purchase_price - paid_amt = 1000.
+    // Pro-rata share for primary funder (buyer_a):
+    //   1000 * buyer_a_funded(500) / total_funded(1000) = 500
+    // buyer_a gets their 500 back.
+    assert_eq!(pt_client.balance(&buyer_a), 500);
+
+    // buyer_b is not the primary funder so the direct refund path does NOT pay them.
+    // Their 500 remains in the escrow contract (stranded in the MVP path).
+    assert_eq!(pt_client.balance(&buyer_b), 0);
+    assert_eq!(pt_client.balance(&escrow_id), 500);
+
+    // Both funder storage records are preserved after refund (cleanup_escrow removes them)
+    let funder_a_stored = env.as_contract(&escrow_id, || {
+        storage::get_funder_amount(&env, invoice_id.clone(), &buyer_a)
+    });
+    let funder_b_stored = env.as_contract(&escrow_id, || {
+        storage::get_funder_amount(&env, invoice_id.clone(), &buyer_b)
+    });
+    assert_eq!(funder_a_stored, 500);
+    assert_eq!(funder_b_stored, 500);
+}
+
+// ── 23. Storage persistence: funded_amt and funders list after fund_escrow ────
+
+#[test]
+fn test_storage_persistence_funded_amt_and_funders_after_fund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_STORE");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "storage_persistence"),
+        &None,
+    );
+
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // Verify persistent storage state directly
+    let funder_amt = env.as_contract(&escrow_id, || {
+        storage::get_funder_amount(&env, invoice_id.clone(), &buyer)
+    });
+    assert_eq!(funder_amt, 1000);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, 1000);
+    assert_eq!(data.funder, Some(buyer.clone()));
+    assert_eq!(data.status, EscrowStatus::Funded);
+}
+
+// ── 24. Storage persistence: paid_amt increments through multiple payments ────
+
+#[test]
+fn test_storage_persistence_paid_amt_after_partial_payments() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &0);
+    pt_asset.mint(&buyer, &1000);
+    pt_asset.mint(&payer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_PAID");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "paid_amt_persistence"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    client.record_payment(&invoice_id, &payer, &300);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.paid_amt, 300);
+    assert_eq!(data.status, EscrowStatus::Funded);
+
+    client.record_payment(&invoice_id, &payer, &400);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.paid_amt, 700);
+    assert_eq!(data.status, EscrowStatus::Funded);
+
+    client.record_payment(&invoice_id, &payer, &300);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.paid_amt, 1000);
+    assert_eq!(data.status, EscrowStatus::Settled);
+}
+
+// ── 25. paused() view returns correct value when initialized but not paused ───
+
+#[test]
+fn test_paused_view_returns_false_when_not_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+
+    assert!(!client.paused());
+}
+
+// ── 26. paused() view returns true after set_paused(true) ────────────────────
+
+#[test]
+fn test_paused_view_returns_true_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+    client.set_paused(&true);
+
+    assert!(client.paused());
+}
+
+// ── 27. fund_escrow: amount exactly equals remaining purchase_price (edge) ────
+
+#[test]
+fn test_fund_escrow_exact_remaining_amount_completes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_EXACT");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "exact_fund"),
+        &Some(200),
+    );
+
+    // Fund in two chunks: 800 (multiple of 200) then the exact remaining 200
+    client.fund_escrow(&invoice_id, &buyer, &800);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Created);
+
+    // 200 == remaining → allowed even though it equals the milestone exactly
+    client.fund_escrow(&invoice_id, &buyer, &200);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+}
+
+// ── 28. fund_escrow: over-funding attempt → InvalidAmount ─────────────────────
+
+#[test]
+fn test_fund_escrow_over_purchase_price_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &2000);
+
+    let invoice_id = Symbol::new(&env, "INV_OVER");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "over_fund"),
+        &None,
+    );
+
+    // Attempting to fund more than purchase_price
+    let result = client.try_fund_escrow(&invoice_id, &buyer, &1001);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // State must not change
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Created);
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, 0);
+}
+
+// ── 29. record_payment by non-debtor → InvalidPayer state is unchanged ────────
+
+#[test]
+fn test_record_payment_invalid_payer_state_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let intruder = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+    pt_asset.mint(&intruder, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_IP");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "invalid_payer_state"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &1000);
+
+    // intruder tries to pay
+    let result = client.try_record_payment(&invoice_id, &intruder, &1000);
+    assert_eq!(result, Err(Ok(Error::InvalidPayer)));
+
+    // Escrow must remain Funded and paid_amt must be 0
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.status, EscrowStatus::Funded);
+    assert_eq!(data.paid_amt, 0);
+}
+
+// ── 30. create_escrow while paused → Paused, no storage side-effects ─────────
+
+#[test]
+fn test_create_escrow_while_paused_leaves_no_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    client.set_paused(&true);
+
+    let invoice_id = Symbol::new(&env, "INV_NO_CRE");
+    let result = client.try_create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "paused_create"),
+        &None,
+    );
+    assert_eq!(result, Err(Ok(Error::Paused)));
+
+    // No escrow entry should have been persisted
+    env.as_contract(&escrow_id, || {
+        assert!(!storage::has_escrow(&env, invoice_id.clone()));
+    });
+}
+
+// ── 31. Whitelist state persists after toggle off/on cycle ────────────────────
+
+#[test]
+fn test_whitelist_toggle_cycle_state_persistence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+
+    // Whitelist buyer, enable, disable, then re-enable — buyer must still be listed
+    client.set_buyer_whitelisted(&admin, &buyer, &true);
+    client.set_whitelist_enabled(&admin, &true);
+    client.set_whitelist_enabled(&admin, &false);
+    client.set_whitelist_enabled(&admin, &true);
+
+    // Buyer's whitelist flag is independent of the enable toggle
+    assert!(client.is_buyer_whitelisted(&buyer));
+    assert!(client.get_config().whitelist_enabled);
+}
+
+// ── 32. Multiple escrow IDs are independent in storage ────────────────────────
+
+#[test]
+fn test_multiple_escrow_ids_are_independent_in_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+
+    let ids: &[&str] = &["INV_ID_1", "INV_ID_2", "INV_ID_3"];
+    for raw in ids {
+        let invoice_id = Symbol::new(&env, raw);
+        client.create_escrow(
+            &invoice_id,
+            &seller,
+            &seller,
+            &1000,
+            &800,
+            &1_000_000,
+            &pt_id.address(),
+            &inv_token_id,
+            &test_commitment(&env, raw),
+            &None,
+        );
+    }
+
+    // Cancel only the middle one
+    let middle = Symbol::new(&env, ids[1]);
+    client.cancel_escrow(&middle, &seller);
+
+    assert_eq!(
+        client.get_escrow_status(&Symbol::new(&env, ids[0])),
+        EscrowStatus::Created
+    );
+    assert_eq!(
+        client.get_escrow_status(&Symbol::new(&env, ids[1])),
+        EscrowStatus::Cancelled
+    );
+    assert_eq!(
+        client.get_escrow_status(&Symbol::new(&env, ids[2])),
+        EscrowStatus::Created
+    );
+}
+
+// ── 33. get_config returns correct values after update_platform_fee_bps ───────
+
+#[test]
+fn test_get_config_reflects_fee_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &300);
+
+    let config = client.get_config();
+    assert_eq!(config.fee_bps, 300);
+    assert_eq!(config.admin, admin);
+    assert!(!config.paused);
+    assert_eq!(config.payment_distributor, None);
+
+    client.update_platform_fee_bps(&750);
+
+    let config2 = client.get_config();
+    assert_eq!(config2.fee_bps, 750);
+    // Other fields must be unchanged
+    assert_eq!(config2.admin, admin);
+    assert!(!config2.paused);
+}
+
+// ── 34. escrow_status_changed NOT emitted for partial funding (Created→Created)
+
+#[test]
+fn test_partial_fund_does_not_emit_status_changed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &1000);
+
+    let invoice_id = Symbol::new(&env, "INV_PF_SC");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1000,
+        &1000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "partial_fund_no_status"),
+        &Some(500),
+    );
+
+    // Partial funding: 500 out of 1000 — status stays Created
+    client.fund_escrow(&invoice_id, &buyer, &500);
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Created);
+
+    // Count escrow_status_changed events that carry a non-Created status.
+    // After a partial fund the status is still Created → only the initial
+    // Created transition should have been emitted.
+    let events = env.events().all();
+    let non_created_status_count = events
+        .events()
+        .iter()
+        .filter(|e| {
+            let (_, topics, _) = parse_event(&env, e);
+            if !topics
+                .get(0)
+                .map(|t| {
+                    Symbol::try_from_val(&env, &t).unwrap()
+                        == Symbol::new(&env, "escrow_status_changed")
+                })
+                .unwrap_or(false)
+            {
+                return false;
+            }
+            let (_a, _t, data) = parse_event(&env, e);
+            let event_data: Option<(Symbol, u32, u64)> = data.try_into_val(&env).ok();
+            event_data
+                .map(|d| d.1 != EscrowStatus::Created as u32)
+                .unwrap_or(false)
+        })
+        .count();
+
+    assert_eq!(
+        non_created_status_count, 0,
+        "unexpected non-Created status_changed event emitted after partial fund"
+    );
+}
+
+// ── 35. Error path matrix: set_buyer_whitelisted before initialization ─────────
+
+#[test]
+fn test_set_buyer_whitelisted_not_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let caller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let result = client.try_set_buyer_whitelisted(&caller, &buyer, &true);
+    assert_eq!(result, Err(Ok(Error::NotInit)));
+}
+
+// ── 36. refund while paused → Paused (re-verifying the exact error path) ──────
+
+#[test]
+fn test_refund_while_paused_returns_paused_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+    let due_date: u64 = 1000;
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &500);
+
+    let invoice_id = Symbol::new(&env, "INV_RF_PAUSED");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &seller,
+        &500,
+        &500,
+        &due_date,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "refund_paused"),
+        &None,
+    );
+    client.fund_escrow(&invoice_id, &buyer, &500);
+
+    env.ledger().with_mut(|li| li.timestamp = due_date + 1);
+    client.set_paused(&true);
+
+    let result = client.try_refund(&invoice_id);
+    assert_eq!(result, Err(Ok(Error::Paused)));
+
+    // Status must still be Funded
+    assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
+}
