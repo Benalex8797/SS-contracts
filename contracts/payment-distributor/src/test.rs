@@ -2273,7 +2273,20 @@ fn test_fuzz_dynamic_fee_rate_calculation_invariants() {
     distributor.initialize(&admin);
 
     let paid_amounts: [i128; 14] = [
-        1, 2, 7, 10, 99, 100, 333, 1_000, 9_999, 10_000, 100_000, 1_000_000, 10_000_000, 1_000_000_000_000,
+        1,
+        2,
+        7,
+        10,
+        99,
+        100,
+        333,
+        1_000,
+        9_999,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        1_000_000_000_000,
     ];
     let investor_amounts: [i128; 6] = [0, 1, 50, 100, 5_000, 500_000];
     let fee_bps_values: [u32; 15] = [
@@ -2290,7 +2303,13 @@ fn test_fuzz_dynamic_fee_rate_calculation_invariants() {
                 let preview = distributor.calculate_distribution_splits(
                     &escrow,
                     &inv_sym,
-                    &soroban_sdk::vec![&env, token.clone(), seller.clone(), funder.clone(), seller.clone()],
+                    &soroban_sdk::vec![
+                        &env,
+                        token.clone(),
+                        seller.clone(),
+                        funder.clone(),
+                        seller.clone()
+                    ],
                     &soroban_sdk::vec![&env, *paid, 0i128, *inv_amt, *fee_bps as i128],
                 );
 
@@ -2311,7 +2330,10 @@ fn test_fuzz_dynamic_fee_rate_calculation_invariants() {
             }
         }
     }
-    assert!(counter >= 1000, "fuzz test must cover extensive input combinations");
+    assert!(
+        counter >= 1000,
+        "fuzz test must cover extensive input combinations"
+    );
 }
 
 #[test]
@@ -2330,7 +2352,14 @@ fn test_fuzz_dynamic_fee_rate_out_of_bounds_rejection() {
     distributor.initialize(&admin);
 
     let invalid_fee_bps_values: [i128; 8] = [
-        10_001, 10_002, 10_500, 20_000, 50_000, 100_000, 1_000_000, u32::MAX as i128,
+        10_001,
+        10_002,
+        10_500,
+        20_000,
+        50_000,
+        100_000,
+        1_000_000,
+        u32::MAX as i128,
     ];
 
     for invalid_bps in invalid_fee_bps_values.iter() {
@@ -2338,7 +2367,13 @@ fn test_fuzz_dynamic_fee_rate_out_of_bounds_rejection() {
         let result = distributor.try_calculate_distribution_splits(
             &escrow,
             &inv_sym,
-            &soroban_sdk::vec![&env, token.clone(), seller.clone(), funder.clone(), seller.clone()],
+            &soroban_sdk::vec![
+                &env,
+                token.clone(),
+                seller.clone(),
+                funder.clone(),
+                seller.clone()
+            ],
             &soroban_sdk::vec![&env, 10_000i128, 0i128, 500i128, *invalid_bps],
         );
         assert_eq!(
@@ -2364,8 +2399,7 @@ fn test_fuzz_dynamic_fee_rate_execution_and_state_persistence() {
     let expected_fee = 10_000i128 * 750 / 10_000; // 750
     let total_required = paid_amount + investor_amount + expected_fee; // 12750
 
-    ctx.payment_asset
-        .mint(&ctx.distributor_id, &total_required);
+    ctx.payment_asset.mint(&ctx.distributor_id, &total_required);
 
     ctx.distributor.distribute_payment(
         &ctx.escrow_id,
@@ -2461,4 +2495,3 @@ fn test_fuzz_dynamic_fee_incremental_partial_payments() {
         .get_distribution_state(&ctx.escrow_id, &invoice_id);
     assert_eq!(state.paid_distributed, cumulative_2);
 }
-
