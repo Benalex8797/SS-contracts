@@ -488,3 +488,292 @@ fn test_integration_error_distribute_refund_invalid_status() {
     );
     assert_eq!(result2, Err(Ok(Error::InvalidEscrowStatus)));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #148: Multi-Recipient Payment Distribution Fanout Test Suite
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Verify multi-recipient fee fanout distribution where platform fee is split
+/// among multiple third-party fee recipients and the primary admin.
+#[test]
+fn test_integration_multi_recipient_payment_fanout_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true); // 5% fee (500 bps)
+    let fanout_1 = Address::generate(&env);
+    let fanout_2 = Address::generate(&env);
+    let fanout_3 = Address::generate(&env);
+
+    let paid_amount = 10_000i128;
+    let investor_amount = 0i128;
+    let fee_bps = 500i128;
+    let platform_fee = 500i128; // 10_000 * 500 / 10_000
+    let total_required = paid_amount + investor_amount + platform_fee; // 10_500
+
+    ctx.payment_asset.mint(&ctx.distributor_id, &total_required);
+
+    let addresses = soroban_sdk::vec![
+        &env,
+        ctx.payment_token.address.clone(),
+        ctx.seller.clone(),
+        ctx.buyer.clone(),
+        ctx.admin.clone(),
+        fanout_1.clone(),
+        fanout_2.clone(),
+        fanout_3.clone(),
+    ];
+    let amounts = soroban_sdk::vec![
+        &env,
+        paid_amount,
+        paid_amount,
+        investor_amount,
+        fee_bps,
+        100i128, // fanout_1 cut
+        150i128, // fanout_2 cut
+        50i128,  // fanout_3 cut
+    ];
+
+    ctx.distributor.distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &1u32, // EscrowStatus::Funded
+    );
+
+    // Verify recipient balances
+    assert_eq!(ctx.payment_token.balance(&ctx.seller), 10_000);
+    assert_eq!(ctx.payment_token.balance(&fanout_1), 100);
+    assert_eq!(ctx.payment_token.balance(&fanout_2), 150);
+    assert_eq!(ctx.payment_token.balance(&fanout_3), 50);
+    // Admin receives remainder of platform fee: 500 - (100 + 150 + 50) = 200
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 200);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+
+    // Verify persistent distribution state
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert_eq!(state.paid_distributed, 10_000);
+    assert!(!state.refund_distributed);
+}
+
+/// Verify multi-recipient fanout with maximum allowed fee recipients (10 recipients).
+#[test]
+fn test_integration_multi_recipient_payment_fanout_max_limit_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 1_000, true); // 10% fee (1000 bps)
+    let paid_amount = 10_000i128;
+    let investor_amount = 0i128;
+    let fee_bps = 1_000i128;
+    let platform_fee = 1_000i128; // 1000
+    let total_required = paid_amount + investor_amount + platform_fee;
+
+    ctx.payment_asset.mint(&ctx.distributor_id, &total_required);
+
+    let mut addresses = soroban_sdk::vec![
+        &env,
+        ctx.payment_token.address.clone(),
+        ctx.seller.clone(),
+        ctx.buyer.clone(),
+        ctx.admin.clone(),
+    ];
+    let mut amounts = soroban_sdk::vec![&env, paid_amount, paid_amount, investor_amount, fee_bps,];
+
+    let mut fanout_addresses: soroban_sdk::Vec<Address> = soroban_sdk::vec![&env];
+    for _ in 0..10 {
+        let addr = Address::generate(&env);
+        fanout_addresses.push_back(addr.clone());
+        addresses.push_back(addr);
+        amounts.push_back(50i128); // 10 * 50 = 500 fanout total
+    }
+
+    ctx.distributor.distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &1u32,
+    );
+
+    for i in 0..10 {
+        let addr = fanout_addresses.get(i).unwrap();
+        assert_eq!(ctx.payment_token.balance(&addr), 50);
+    }
+    // Admin receives remainder: 1000 - 500 = 500
+    assert_eq!(ctx.payment_token.balance(&ctx.admin), 500);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+}
+
+/// Verify that exceeding MAX_FANOUT_RECIPIENTS (11 fee recipients) is rejected.
+#[test]
+fn test_integration_multi_recipient_payment_fanout_exceeding_max_limit_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let mut addresses = soroban_sdk::vec![
+        &env,
+        ctx.payment_token.address.clone(),
+        ctx.seller.clone(),
+        ctx.buyer.clone(),
+        ctx.admin.clone(),
+    ];
+    let mut amounts = soroban_sdk::vec![&env, 1_000i128, 1_000i128, 0i128, 500i128,];
+
+    // Add 11 fanout recipients
+    for _ in 0..11 {
+        addresses.push_back(Address::generate(&env));
+        amounts.push_back(10i128);
+    }
+
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &1u32,
+    );
+    assert_eq!(result, Err(Ok(Error::TooManyFeeRecipients)));
+}
+
+/// Verify that fee fanout amounts exceeding platform_fee are rejected.
+#[test]
+fn test_integration_multi_recipient_payment_fanout_exceeding_fee_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true); // fee = 50
+    let fanout_1 = Address::generate(&env);
+    let fanout_2 = Address::generate(&env);
+
+    let addresses = soroban_sdk::vec![
+        &env,
+        ctx.payment_token.address.clone(),
+        ctx.seller.clone(),
+        ctx.buyer.clone(),
+        ctx.admin.clone(),
+        fanout_1,
+        fanout_2,
+    ];
+    let amounts = soroban_sdk::vec![
+        &env, 1_000i128, 1_000i128, 0i128, 500i128, 30i128,
+        30i128, // 30 + 30 = 60 > platform_fee (50)
+    ];
+
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &1u32,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidFeeSplit)));
+}
+
+/// Verify that negative fanout amounts are rejected.
+#[test]
+fn test_integration_multi_recipient_payment_fanout_negative_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 500, true);
+    let fanout_1 = Address::generate(&env);
+
+    let addresses = soroban_sdk::vec![
+        &env,
+        ctx.payment_token.address.clone(),
+        ctx.seller.clone(),
+        ctx.buyer.clone(),
+        ctx.admin.clone(),
+        fanout_1,
+    ];
+    let amounts = soroban_sdk::vec![
+        &env, 1_000i128, 1_000i128, 0i128, 500i128, -10i128, // negative fanout
+    ];
+
+    let result = ctx.distributor.try_distribute_payment(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &1u32,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidFeeSplit)));
+}
+
+/// Verify pro-rata refund fanout across multiple funders with remainder dust absorption.
+#[test]
+fn test_integration_multi_funder_refund_pro_rata_fanout_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    let funder_1 = Address::generate(&env);
+    let funder_2 = Address::generate(&env);
+    let funder_3 = Address::generate(&env);
+
+    let refund_amount = 1_000i128;
+    ctx.payment_asset.mint(&ctx.distributor_id, &refund_amount);
+
+    let addresses = soroban_sdk::vec![
+        &env,
+        ctx.payment_token.address.clone(),
+        funder_1.clone(),
+        funder_2.clone(),
+        funder_3.clone(),
+    ];
+    let amounts = soroban_sdk::vec![
+        &env,
+        refund_amount,
+        500i128, // weight 1 (50%)
+        300i128, // weight 2 (30%)
+        200i128, // weight 3 (20%)
+    ];
+
+    ctx.distributor.distribute_refund(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &3u32, // EscrowStatus::Refunded
+    );
+
+    assert_eq!(ctx.payment_token.balance(&funder_1), 500);
+    assert_eq!(ctx.payment_token.balance(&funder_2), 300);
+    assert_eq!(ctx.payment_token.balance(&funder_3), 200);
+    assert_eq!(ctx.payment_token.balance(&ctx.distributor_id), 0);
+
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert!(state.refund_distributed);
+}
+
+/// Verify exceeding MAX_REFUND_RECIPIENTS in distribute_refund is rejected.
+#[test]
+fn test_integration_multi_funder_refund_exceeding_max_recipients_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    let mut addresses = soroban_sdk::vec![&env, ctx.payment_token.address.clone()];
+    let mut amounts = soroban_sdk::vec![&env, 1_000i128];
+
+    for _ in 0..11 {
+        addresses.push_back(Address::generate(&env));
+        amounts.push_back(100i128);
+    }
+
+    let result = ctx.distributor.try_distribute_refund(
+        &ctx.escrow_id,
+        &ctx.invoice_id,
+        &addresses,
+        &amounts,
+        &3u32,
+    );
+    assert_eq!(result, Err(Ok(Error::TooManyRefundRecipients)));
+}
