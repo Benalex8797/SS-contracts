@@ -7326,3 +7326,275 @@ fn test_refund_while_paused_returns_paused_error() {
     // Status must still be Funded
     assert_eq!(client.get_escrow_status(&invoice_id), EscrowStatus::Funded);
 }
+
+// ── 37. Deposit capacity enforcement ─────────────────────────────────────────
+//
+// The escrow must never accept deposits beyond the purchase_price (the invoice
+// face value used as the funding ceiling).  These tests cover:
+//   a) exact-fill deposit succeeds
+//   b) 1-stroop-over remaining capacity is rejected
+//   c) two funders where the second would exceed capacity — only first succeeds
+//   d) cumulative invariant: funded_amt never exceeds purchase_price
+//   e) state unchanged after a capacity-exceeded rejection
+
+#[test]
+fn test_deposit_exact_capacity_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &10_000);
+
+    let invoice_id = Symbol::new(&env, "INV_EXACT");
+    let face_value: i128 = 5_000;
+    let purchase_price: i128 = 5_000;
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &face_value,
+        &purchase_price,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "exact_fill"),
+        &None,
+    );
+
+    // Deposit exactly the purchase_price — must succeed
+    client.fund_escrow(&invoice_id, &buyer, &purchase_price);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, purchase_price);
+    assert_eq!(data.status, EscrowStatus::Funded);
+}
+
+#[test]
+fn test_deposit_one_stroop_over_remaining_capacity_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &10_000);
+
+    let invoice_id = Symbol::new(&env, "INV_OVER1");
+    let face_value: i128 = 5_000;
+    let purchase_price: i128 = 5_000;
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &face_value,
+        &purchase_price,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "over_by_one"),
+        &None,
+    );
+
+    // Partially fund first
+    let first_deposit: i128 = 3_000;
+    client.fund_escrow(&invoice_id, &buyer, &first_deposit);
+
+    // Remaining capacity is 2_000; try 2_001 (one stroop over)
+    let remaining = purchase_price - first_deposit;
+    let over_by_one = remaining + 1;
+    let result = client.try_fund_escrow(&invoice_id, &buyer, &over_by_one);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn test_two_deposits_exceeding_capacity_only_first_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let funder_a = Address::generate(&env);
+    let funder_b = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+
+    let invoice_id = Symbol::new(&env, "INV_TWO");
+    let face_value: i128 = 1_000;
+    let purchase_price: i128 = 1_000;
+
+    // Each funder has enough individually, but together they exceed capacity
+    pt_asset.mint(&funder_a, &800);
+    pt_asset.mint(&funder_b, &800);
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &face_value,
+        &purchase_price,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "two_funders"),
+        &None,
+    );
+
+    // First funder deposits 800 — succeeds
+    client.fund_escrow(&invoice_id, &funder_a, &800);
+
+    // Second funder tries 800 — would push total to 1600, exceeds capacity
+    let result = client.try_fund_escrow(&invoice_id, &funder_b, &800);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // Only the first funder's deposit should be recorded
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, 800);
+    assert_eq!(data.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_funded_amt_never_exceeds_purchase_price_after_any_deposit_sequence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &100_000);
+
+    let invoice_id = Symbol::new(&env, "INV_SEQ");
+    let face_value: i128 = 10_000;
+    let purchase_price: i128 = 10_000;
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &face_value,
+        &purchase_price,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "seq_deposits"),
+        &None,
+    );
+
+    // A sequence of valid partial deposits
+    let deposits: [i128; 4] = [2_000, 3_000, 4_000, 1_000];
+    for &amt in &deposits {
+        client.fund_escrow(&invoice_id, &buyer, &amt);
+        let data = client.get_escrow(&invoice_id);
+        assert!(
+            data.funded_amt <= purchase_price,
+            "funded_amt ({}) must never exceed purchase_price ({})",
+            data.funded_amt,
+            purchase_price,
+        );
+    }
+
+    // Now the escrow is fully funded — any further deposit must be rejected
+    let result = client.try_fund_escrow(&invoice_id, &buyer, &1);
+    assert_eq!(result, Err(Ok(Error::EscrowFunded)));
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, purchase_price);
+    assert!(
+        data.funded_amt <= purchase_price,
+        "funded_amt must not exceed purchase_price even after rejection"
+    );
+}
+
+#[test]
+fn test_escrow_state_unchanged_after_capacity_exceeded_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &10_000);
+
+    let invoice_id = Symbol::new(&env, "INV_UNCH");
+    let face_value: i128 = 5_000;
+    let purchase_price: i128 = 5_000;
+
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &face_value,
+        &purchase_price,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(&env, "state_unchanged"),
+        &None,
+    );
+
+    // Partially fund
+    client.fund_escrow(&invoice_id, &buyer, &3_000);
+
+    // Snapshot state before the rejected deposit
+    let before = client.get_escrow(&invoice_id);
+    assert_eq!(before.funded_amt, 3_000);
+    assert_eq!(before.status, EscrowStatus::Created);
+
+    // Attempt deposit that exceeds remaining capacity
+    let result = client.try_fund_escrow(&invoice_id, &buyer, &3_000);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+
+    // State must be identical to before the rejected deposit
+    let after = client.get_escrow(&invoice_id);
+    assert_eq!(after.funded_amt, before.funded_amt);
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.funder, before.funder);
+    assert_eq!(after.funders.len(), before.funders.len());
+    assert_eq!(after.paid_amt, before.paid_amt);
+}
