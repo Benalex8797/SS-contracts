@@ -13,6 +13,8 @@ mod types;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, IntoVal, Symbol};
 
+use types::{EmergencyApprovals, MultiSigConfig};
+
 // EscrowStatus is re-exported publicly; Config and EscrowData are crate-private.
 pub use types::EscrowStatus;
 use types::{Config, EscrowData};
@@ -38,6 +40,11 @@ fn ensure_non_zero_address(env: &Env, address: &Address) -> Result<(), Error> {
 const MAX_BPS: u32 = 10_000;
 const DISTRIBUTE_PAYMENT_FN: &str = "distribute_payment";
 const DISTRIBUTE_REFUND_FN: &str = "distribute_refund";
+
+/// Minimum escrow duration: 1 hour (3600 seconds).
+const MIN_ESCROW_DURATION_SECS: u64 = 3_600;
+/// Maximum escrow duration: 365 days (31,536,000 seconds).
+const MAX_ESCROW_DURATION_SECS: u64 = 31_536_000;
 
 #[contract]
 pub struct InvoiceEscrow;
@@ -149,6 +156,10 @@ impl InvoiceEscrow {
         let current_timestamp = env.ledger().timestamp();
         if due_date <= current_timestamp {
             return Err(Error::InvalidDueDate);
+        }
+        let duration = due_date.saturating_sub(current_timestamp);
+        if duration < MIN_ESCROW_DURATION_SECS || duration > MAX_ESCROW_DURATION_SECS {
+            return Err(Error::InvalidDuration);
         }
         let config = storage::get_config(&env).ok_or(Error::NotInit)?;
         ensure_not_paused(&config)?;
@@ -762,6 +773,94 @@ impl InvoiceEscrow {
     pub fn paused(env: Env) -> Result<bool, Error> {
         let config = storage::get_config(&env).ok_or(Error::NotInit)?;
         Ok(config.paused)
+    }
+
+    /// Admin-only: configure the emergency multi-sig admin set and threshold.
+    pub fn set_emergency_config(
+        env: Env,
+        admin: Address,
+        config: MultiSigConfig,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        if stored_config.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        if config.threshold == 0 || config.threshold > config.admins.len() as u32 {
+            return Err(Error::InvalidFeeBps); // reuse for invalid threshold
+        }
+        storage::set_emergency_config(&env, &config);
+        Ok(())
+    }
+
+    /// Emergency multi-sig release: an admin approves releasing funds for an invoice.
+    /// When the threshold is reached, funds are paid out to the seller and the escrow
+    /// is marked as Settled.
+    pub fn emergency_release(env: Env, caller: Address, invoice_id: Symbol) -> Result<(), Error> {
+        caller.require_auth();
+        let config = storage::get_emergency_config(&env).ok_or(Error::EmergencyNotConfigured)?;
+
+        // Verify caller is an emergency admin
+        let mut is_admin = false;
+        for admin in config.admins.iter() {
+            if admin == caller {
+                is_admin = true;
+                break;
+            }
+        }
+        if !is_admin {
+            return Err(Error::NotEmergencyAdmin);
+        }
+
+        let mut approvals = storage::get_emergency_approvals(&env, &invoice_id);
+
+        // Check for duplicate approval
+        for addr in approvals.approvals.iter() {
+            if addr == caller {
+                return Err(Error::AlreadyApproved);
+            }
+        }
+
+        approvals.approvals.push_back(caller.clone());
+        storage::set_emergency_approvals(&env, &invoice_id, &approvals);
+
+        if approvals.approvals.len() as u32 < config.threshold {
+            return Err(Error::ThresholdNotMet);
+        }
+
+        // Threshold reached — execute emergency release
+        let mut data =
+            storage::get_escrow(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
+
+        if data.status == EscrowStatus::Settled
+            || data.status == EscrowStatus::Refunded
+            || data.status == EscrowStatus::Cancelled
+        {
+            return Err(Error::AlreadySettled);
+        }
+
+        let token = token::Client::new(&env, &data.token);
+        let contract = env.current_contract_address();
+        let remaining = data
+            .purchase_price
+            .checked_sub(data.paid_amt)
+            .ok_or(Error::Overflow)?;
+
+        // Pay remaining to seller
+        if remaining > 0 {
+            token.transfer(&contract, &data.seller, &remaining);
+        }
+
+        data.status = EscrowStatus::Settled;
+        storage::set_escrow(&env, invoice_id.clone(), &data);
+
+        events::escrow_status_changed(
+            &env,
+            invoice_id.clone(),
+            EscrowStatus::Settled,
+            env.ledger().timestamp(),
+        );
+        Ok(())
     }
 
     /// Reclaim persistent storage for an escrow that has reached a terminal state
