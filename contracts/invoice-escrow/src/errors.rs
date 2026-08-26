@@ -66,4 +66,6 @@ pub enum Error {
     ZeroAmount = 29,
     /// Deposit amount is below the configured minimum investment.
     AmountBelowMinimum = 30,
+    /// Address is the zero address (all-zero 32-byte key).
+    InvalidAddress = 31,
 }
