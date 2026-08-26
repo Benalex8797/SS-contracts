@@ -2526,3 +2526,177 @@ fn test_pause_unpause_event_emission() {
     assert_eq!(old_val, true);
     assert_eq!(new_val, false);
 }
+
+// ── Invoice mint uniqueness, authorization, and identifier encoding ──────────
+
+/// First mint for an invoice token succeeds; re-initialize (second series) is
+/// rejected with no further mint events or supply growth.
+#[test]
+fn test_duplicate_mint_series_rejected_for_same_invoice() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice INV-DUP");
+    let symbol = SorobanString::from_str(&env, "INVDUP");
+    let invoice_id = Symbol::new(&env, "inv_dup");
+
+    client.initialize(&admin, &name, &symbol, &7u32, &invoice_id, &minter);
+
+    let mint_amount: i128 = 1_000;
+    client.mint(&recipient, &mint_amount, &minter);
+
+    // Inspect mint event immediately (subsequent view calls can advance the
+    // recorded event cursor in the test host).
+    let events_after_mint = env.events().all();
+    let mint_event = events_after_mint.events().last().unwrap();
+    let (_addr, topics, data) = parse_event(&env, mint_event);
+    assert_eq!(
+        topics,
+        (Symbol::new(&env, "mint"), recipient.clone()).into_val(&env)
+    );
+    let emitted: i128 = data.try_into_val(&env).unwrap();
+    assert_eq!(emitted, mint_amount);
+    let mint_event_count = events_after_mint.events().len();
+    assert_eq!(mint_event_count, 1, "exactly one mint event for the invoice");
+
+    assert_eq!(client.balance(&recipient), mint_amount);
+    assert_eq!(client.total_supply(), mint_amount);
+    assert_eq!(client.invoice_id(), invoice_id);
+
+    // Repeated initialize with the same invoice id cannot create another series.
+    let dup_init = client.try_initialize(&admin, &name, &symbol, &7u32, &invoice_id, &minter);
+    assert_eq!(dup_init, Err(Ok(crate::errors::Error::AlreadyInit)));
+
+    assert_eq!(client.balance(&recipient), mint_amount);
+    assert_eq!(client.total_supply(), mint_amount);
+    assert_eq!(client.invoice_id(), invoice_id);
+}
+
+/// Authorized minter creates the expected token record; unauthorized and
+/// invalid invoice metadata paths are rejected.
+#[test]
+fn test_authorized_mint_and_invalid_invoice_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice AUTH");
+    let symbol = SorobanString::from_str(&env, "AUTH");
+    let invoice_id = Symbol::new(&env, "inv_auth");
+
+    // Empty name rejected before any token record exists.
+    let empty_name = SorobanString::from_str(&env, "");
+    assert_eq!(
+        client.try_initialize(&admin, &empty_name, &symbol, &7u32, &invoice_id, &minter),
+        Err(Ok(crate::errors::Error::InvalidMetadata))
+    );
+
+    // Empty symbol rejected.
+    let empty_symbol = SorobanString::from_str(&env, "");
+    assert_eq!(
+        client.try_initialize(&admin, &name, &empty_symbol, &7u32, &invoice_id, &minter),
+        Err(Ok(crate::errors::Error::InvalidMetadata))
+    );
+
+    // Valid initialize + authorized mint.
+    client.initialize(&admin, &name, &symbol, &7u32, &invoice_id, &minter);
+    client.mint(&recipient, &250, &minter);
+    assert_eq!(client.balance(&recipient), 250);
+    assert_eq!(client.total_supply(), 250);
+    assert_eq!(client.invoice_id(), invoice_id);
+    assert_eq!(client.name(), name);
+    assert_eq!(client.symbol(), symbol);
+
+    // Unauthorized caller rejected; balances/supply unchanged.
+    let unauthorized = client.try_mint(&recipient, &50, &stranger);
+    assert_eq!(unauthorized, Err(Ok(crate::errors::Error::Unauthorized)));
+    assert_eq!(client.balance(&recipient), 250);
+    assert_eq!(client.total_supply(), 250);
+
+    // Duplicate initialize (same invoice id on same contract) rejected.
+    assert_eq!(
+        client.try_initialize(&admin, &name, &symbol, &7u32, &invoice_id, &minter),
+        Err(Ok(crate::errors::Error::AlreadyInit))
+    );
+    assert_eq!(client.invoice_id(), invoice_id);
+    assert_eq!(client.total_supply(), 250);
+}
+
+/// Invoice identifiers and metadata round-trip through storage without loss;
+/// stored metadata matches what initialize recorded for event consumers.
+#[test]
+fn test_invoice_identifier_and_metadata_encoding() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Short identifier
+    {
+        let contract_id = env.register(InvoiceToken, ());
+        let client = InvoiceTokenClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        let short_id = Symbol::new(&env, "a");
+        let name = SorobanString::from_str(&env, "Short Inv");
+        let symbol = SorobanString::from_str(&env, "S");
+        client.initialize(&admin, &name, &symbol, &7u32, &short_id, &minter);
+        assert_eq!(client.invoice_id(), short_id);
+        assert_eq!(client.name(), name);
+        assert_eq!(client.symbol(), symbol);
+        assert_eq!(client.decimals(), 7);
+    }
+
+    // Maximum-length Symbol (32 chars) — boundary for Soroban Symbol encoding
+    {
+        let contract_id = env.register(InvoiceToken, ());
+        let client = InvoiceTokenClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        let max_id = Symbol::new(&env, "abcdefghijklmnopqrstuvwxyz012345");
+        let name = SorobanString::from_str(&env, "Max Length Invoice Identifier");
+        let symbol = SorobanString::from_str(&env, "MAX32");
+        client.initialize(&admin, &name, &symbol, &0u32, &max_id, &minter);
+        assert_eq!(client.invoice_id(), max_id);
+        assert_eq!(client.name(), name);
+        assert_eq!(client.symbol(), symbol);
+        assert_eq!(client.decimals(), 0);
+
+        // Mint and confirm event payload encoding is independent of invoice_id
+        // while invoice_id remains the stored metadata key for consumers.
+        let recipient = Address::generate(&env);
+        client.mint(&recipient, &42, &minter);
+        let events = env.events().all();
+        let event = events.events().last().unwrap();
+        let (_addr, topics, data) = parse_event(&env, event);
+        assert_eq!(
+            topics,
+            (Symbol::new(&env, "mint"), recipient.clone()).into_val(&env)
+        );
+        let emitted: i128 = data.try_into_val(&env).unwrap();
+        assert_eq!(emitted, 42);
+        assert_eq!(client.invoice_id(), max_id);
+    }
+
+    // Near-max boundary (31 chars) still round-trips
+    {
+        let contract_id = env.register(InvoiceToken, ());
+        let client = InvoiceTokenClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        let near_max = Symbol::new(&env, "abcdefghijklmnopqrstuvwxyz01234");
+        let name = SorobanString::from_str(&env, "Near Max");
+        let symbol = SorobanString::from_str(&env, "NMAX");
+        client.initialize(&admin, &name, &symbol, &18u32, &near_max, &minter);
+        assert_eq!(client.invoice_id(), near_max);
+        assert_eq!(client.decimals(), 18);
+    }
+}
