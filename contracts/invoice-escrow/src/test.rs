@@ -7888,3 +7888,253 @@ fn test_invoice_id_and_optional_metadata_event_encoding() {
     assert_eq!(ev2_commitment, stored2.commitment);
     assert_eq!(ev2_milestone, stored2.funding_milestone);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #388: Event snapshot/schema validation for lifecycle events
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_event_escrow_created_snapshot() {
+    let env = Env::default();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+
+    let events = env.events().all();
+    let mut found = false;
+    for i in 0..events.events().len() {
+        let event = events.events().get(i).unwrap();
+        let (_addr, topics, data) = parse_event(&env, event);
+        if let Some(first) = topics.get(0) {
+            let topic: Symbol = first.try_into_val(&env).unwrap();
+            if topic == Symbol::new(&env, "escrow_created") {
+                let (ev_id, ev_seller, ev_debtor, ev_face, ev_price, ev_due, ev_token, ev_inv, _commit, _milestone): (
+                    Symbol, Address, Address, i128, i128, u64, Address, Address, soroban_sdk::BytesN<32>, Option<i128>,
+                ) = data.try_into_val(&env).unwrap();
+                assert_eq!(ev_id, c.invoice_id);
+                assert_eq!(ev_seller, c.seller);
+                assert_eq!(ev_debtor, c.payer);
+                assert_eq!(ev_face, 10_000);
+                assert_eq!(ev_price, 10_000);
+                assert_eq!(ev_token, c.payment_token.id);
+                found = true;
+            }
+        }
+    }
+    assert!(found, "escrow_created event not emitted");
+}
+
+#[test]
+fn test_event_escrow_funded_snapshot() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(&env, &pt_id.address());
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "EV_FUNDED");
+
+    escrow_client.initialize(&admin, &300);
+    pt_asset.mint(&buyer, &10_000);
+
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &buyer, &10_000, &10_000, &1_000_000,
+        &pt_id.address(), &inv_token_id, &test_commitment(&env, "funded_ev"), &None,
+    );
+    escrow_client.fund_escrow(&invoice_id, &buyer, &10_000);
+
+    let events = env.events().all();
+    let found = events.events().iter().rev().find(|e| {
+        let (_, topics, _) = parse_event(&env, e);
+        topics.get(0).map(|t| {
+            Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_funded")
+        }).unwrap_or(false)
+    });
+    assert!(found.is_some(), "escrow_funded event not emitted");
+    let (_, _, data) = parse_event(&env, found.unwrap());
+    let (ev_id, ev_funder, ev_amount, ev_funded, ev_price): (Symbol, Address, i128, i128, i128) = data.try_into_val(&env).unwrap();
+    assert_eq!(ev_id, invoice_id);
+    assert_eq!(ev_funder, buyer);
+    assert_eq!(ev_amount, 10_000);
+    assert_eq!(ev_funded, 10_000);
+    assert_eq!(ev_price, 10_000);
+}
+
+#[test]
+fn test_event_payment_settled_snapshot() {
+    let env = Env::default();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+    c.fund(10_000);
+
+    c.record_payment(10_000);
+
+    let events = env.events().all();
+    let found = events.events().iter().rev().find(|e| {
+        let (_, topics, _) = parse_event(&env, e);
+        topics.get(0).map(|t| {
+            Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "payment_settled")
+        }).unwrap_or(false)
+    });
+    assert!(found.is_some(), "payment_settled event not emitted");
+    let (_, _, data) = parse_event(&env, found.unwrap());
+    let (ev_id, ev_amount, ev_fee, ev_investor): (Symbol, i128, i128, i128) = data.try_into_val(&env).unwrap();
+    assert_eq!(ev_id, c.invoice_id);
+    assert_eq!(ev_amount, 10_000);
+    assert_eq!(ev_fee, 300);
+    assert_eq!(ev_investor, 9_700);
+}
+
+#[test]
+fn test_event_escrow_refunded_snapshot() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+    env.ledger().set_timestamp(5_000);
+    c.fund(10_000);
+    env.ledger().set_timestamp(1_000_001);
+
+    c.escrow_client.refund(&c.invoice_id);
+
+    let events = env.events().all();
+    let found = events.events().iter().rev().find(|e| {
+        let (_, topics, _) = parse_event(&env, e);
+        topics.get(0).map(|t| {
+            Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_refunded")
+        }).unwrap_or(false)
+    });
+    assert!(found.is_some(), "escrow_refunded event not emitted");
+    let (_, _, data) = parse_event(&env, found.unwrap());
+    let (ev_id, ev_amount): (Symbol, i128) = data.try_into_val(&env).unwrap();
+    assert_eq!(ev_id, c.invoice_id);
+    assert_eq!(ev_amount, 10_000);
+}
+
+#[test]
+fn test_event_escrow_cancelled_snapshot() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let escrow_client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "EV_CANCEL");
+
+    escrow_client.initialize(&admin, &300);
+    escrow_client.create_escrow(
+        &invoice_id, &seller, &payer, &10_000, &10_000, &1_000_000,
+        &pt_id.address(), &inv_token_id, &test_commitment(&env, "cancel_ev"), &None,
+    );
+
+    escrow_client.cancel_escrow(&invoice_id, &seller);
+
+    let events = env.events().all();
+    let found = events.events().iter().rev().find(|e| {
+        let (_, topics, _) = parse_event(&env, e);
+        topics.get(0).map(|t| {
+            Symbol::try_from_val(&env, &t).unwrap() == Symbol::new(&env, "escrow_cancelled")
+        }).unwrap_or(false)
+    });
+    assert!(found.is_some(), "escrow_cancelled event not emitted");
+    let (_, _, data) = parse_event(&env, found.unwrap());
+    let (ev_id, ev_seller): (Symbol, Address) = data.try_into_val(&env).unwrap();
+    assert_eq!(ev_id, invoice_id);
+    assert_eq!(ev_seller, seller);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #389: Settlement test suite
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_settlement_wrong_payer_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+    c.fund(10_000);
+
+    let wrong_payer = Address::generate(&env);
+    c.payment_token.asset.mint(&wrong_payer, &10_000);
+    let result = c.escrow_client.try_record_payment(&c.invoice_id, &wrong_payer, &10_000);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidPayer)));
+}
+
+#[test]
+fn test_settlement_invalid_payer_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+    c.fund(10_000);
+
+    let wrong_payer = Address::generate(&env);
+    c.payment_token.asset.mint(&wrong_payer, &10_000);
+    let result = c.escrow_client.try_record_payment(&c.invoice_id, &wrong_payer, &10_000);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidPayer)));
+}
+
+#[test]
+fn test_settlement_pro_rata_fee_calculation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = MockTokenEnvironment::new(&env, 500, 20_000, 20_000); // 5% fee
+    c.fund(20_000);
+
+    c.record_payment(20_000);
+
+    let fee = 20_000 * 500 / 10_000; // = 1_000
+    let investor_share = 20_000 - fee; // = 19_000
+    assert_eq!(c.payment_token.client.balance(&c.seller), 20_000);
+    assert_eq!(c.payment_token.client.balance(&c.admin), fee);
+    assert_eq!(c.payment_token.client.balance(&c.buyer), 20_000 - 20_000 + investor_share);
+}
+
+#[test]
+fn test_settlement_duplicate_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+    c.fund(10_000);
+
+    c.record_payment(10_000);
+
+    let result = c.escrow_client.try_record_payment(&c.invoice_id, &c.payer, &10_000);
+    assert_eq!(result, Err(Ok(crate::errors::Error::AlreadySettled)));
+}
+
+#[test]
+fn test_settlement_emits_escrow_status_changed_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = MockTokenEnvironment::new(&env, 300, 10_000, 10_000);
+    c.fund(10_000);
+
+    let events_before = env.events().all();
+    let len_before = events_before.events().len();
+
+    c.record_payment(10_000);
+
+    let events = env.events().all();
+    let mut found = false;
+    for i in len_before..events.events().len() {
+        let event = events.events().get(i).unwrap();
+        let (_addr, topics, data) = parse_event(&env, event);
+        if let Some(first) = topics.get(0) {
+            let topic: Symbol = first.try_into_val(&env).unwrap();
+            if topic == Symbol::new(&env, "escrow_status_changed") {
+                let (ev_id, ev_status, _ts): (Symbol, u32, u64) = data.try_into_val(&env).unwrap();
+                assert_eq!(ev_id, c.invoice_id);
+                assert_eq!(ev_status, EscrowStatus::Settled as u32);
+                found = true;
+            }
+        }
+    }
+    assert!(found, "escrow_status_changed event not emitted");
+}

@@ -777,3 +777,275 @@ fn test_integration_multi_funder_refund_exceeding_max_recipients_fails() {
     );
     assert_eq!(result, Err(Ok(Error::TooManyRefundRecipients)));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Issue #386: distribute_refund reentrancy tests
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Malicious token whose `transfer` callback re-invokes `distribute_refund`
+/// on the distributor while the lock is held, recording whether it was rejected.
+#[soroban_sdk::contract]
+pub struct MaliciousRefundReentrantToken;
+
+#[soroban_sdk::contractimpl]
+impl MaliciousRefundReentrantToken {
+    pub fn __constructor(env: Env, distributor: Address, escrow: Address, invoice_id: Symbol) {
+        let storage = env.storage().instance();
+        storage.set(&soroban_sdk::symbol_short!("dist"), &distributor);
+        storage.set(&soroban_sdk::symbol_short!("escrow"), &escrow);
+        storage.set(&soroban_sdk::symbol_short!("inv"), &invoice_id);
+        storage.set(&soroban_sdk::symbol_short!("code"), &0u32);
+    }
+
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        1_000_000
+    }
+
+    /// Mimics the token `transfer` entrypoint; attempts a re-entrant distribute_refund.
+    pub fn transfer(env: Env, _from: Address, _to: Address, _amount: i128) {
+        let storage = env.storage().instance();
+        let distributor: Address = storage.get(&soroban_sdk::symbol_short!("dist")).unwrap();
+        let escrow: Address = storage.get(&soroban_sdk::symbol_short!("escrow")).unwrap();
+        let invoice_id: Symbol = storage.get(&soroban_sdk::symbol_short!("inv")).unwrap();
+
+        let addresses = soroban_sdk::vec![
+            &env,
+            escrow.clone(),
+            escrow.clone(),
+            escrow.clone()
+        ];
+        let amounts = soroban_sdk::vec![&env, 1i128, 1i128, 1i128];
+
+        let client = PaymentDistributorClient::new(&env, &distributor);
+        let res =
+            client.try_distribute_refund(&escrow, &invoice_id, &addresses, &amounts, &3u32);
+        let code: u32 = match res {
+            Ok(Ok(())) => 1,
+            Ok(Err(_)) => 2,
+            Err(Ok(e)) => 100 + e as u32,
+            Err(Err(_)) => 3,
+        };
+        storage.set(&soroban_sdk::symbol_short!("code"), &code);
+    }
+
+    pub fn last_code(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::symbol_short!("code"))
+            .unwrap_or(0)
+    }
+}
+
+/// End-to-end: a malicious token whose transfer callback tries to re-invoke
+/// distribute_refund during a distribute_payment cannot re-enter successfully.
+#[test]
+fn test_integration_reentrant_callback_into_distribute_refund_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+    distributor.initialize(&admin);
+
+    let seller = Address::generate(&env);
+    let funder = Address::generate(&env);
+    let escrow = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "REENTR_REF");
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Register the malicious token that will re-enter distribute_refund on `transfer`.
+    let token_id = env.register(
+        MaliciousRefundReentrantToken,
+        (distributor_id.clone(), escrow.clone(), invoice_id.clone()),
+    );
+    let malicious = MaliciousRefundReentrantTokenClient::new(&env, &token_id);
+
+    // Outer distribution: its token transfers route into the malicious token, which
+    // tries to re-invoke distribute_refund while the distribution is in progress.
+    let result = distributor.try_distribute_payment(
+        &escrow,
+        &invoice_id,
+        &soroban_sdk::vec![
+            &env,
+            token_id.clone(),
+            seller.clone(),
+            funder.clone(),
+            admin.clone()
+        ],
+        &soroban_sdk::vec![&env, 100i128, 100i128, 0i128, 0i128],
+        &2u32,
+    );
+
+    // Outer call completes and the re-entrant distribute_refund invocation was NOT allowed.
+    assert!(result.is_ok());
+    assert_ne!(malicious.last_code(), 1);
+}
+
+/// White-box: simulate an in-progress guarded distribution by setting the lock,
+/// then confirm distribute_refund also rejects with ReentrancyDetected.
+#[test]
+fn test_integration_reentrancy_guard_rejects_distribute_refund_when_locked() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+    distributor.initialize(&admin);
+
+    let escrow = Address::generate(&env);
+    let invoice_id = Symbol::new(&env, "LOCKED_REF");
+    distributor.set_escrow_contract(&admin, &escrow);
+
+    // Simulate the lock being held (as if distribute_payment is in progress).
+    env.as_contract(&distributor_id, || {
+        crate::storage::set_lock(&env, true);
+    });
+
+    let addresses = soroban_sdk::vec![
+        &env,
+        escrow.clone(),
+        escrow.clone(),
+        escrow.clone()
+    ];
+    let amounts = soroban_sdk::vec![&env, 100i128, 100i128, 100i128];
+
+    let result =
+        distributor.try_distribute_refund(&escrow, &invoice_id, &addresses, &amounts, &3u32);
+    assert_eq!(result, Err(Ok(Error::ReentrancyDetected)));
+}
+
+/// State persistence after failed reentrancy: distribution state must remain
+/// consistent after a rejected reentrant distribute_refund attempt.
+#[test]
+fn test_integration_state_persistence_after_reentrancy_attempt() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let distributor_id = env.register(PaymentDistributor, ());
+    let distributor = PaymentDistributorClient::new(&env, &distributor_id);
+    distributor.initialize(&admin);
+
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let escrow = InvoiceEscrowClient::new(&env, &escrow_id);
+
+    let inv_token_id = env.register(InvoiceToken, ());
+    let inv_token = InvoiceTokenClient::new(&env, &inv_token_id);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let payment_token = TokenClient::new(&env, &token_id.address());
+    let payment_asset = AssetClient::new(&env, &token_id.address());
+
+    let invoice_id = Symbol::new(&env, "PERSIST");
+    inv_token.initialize(
+        &admin,
+        &SorobanString::from_str(&env, "Persist Test"),
+        &SorobanString::from_str(&env, "PERS"),
+        &7,
+        &invoice_id,
+        &escrow_id,
+    );
+
+    escrow.initialize(&admin, &300);
+    distributor.set_escrow_contract(&admin, &escrow_id);
+    escrow.set_payment_distributor(&distributor_id);
+
+    // Create and fund escrow, then settle a payment to establish state.
+    payment_asset.mint(&buyer, &1_000);
+    escrow.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &1_000,
+        &1_000,
+        &50_000,
+        &payment_token.address,
+        &inv_token.address,
+        &test_commitment(&escrow.env),
+        &None,
+    );
+    escrow.fund_escrow(&invoice_id, &buyer, &1_000);
+    payment_asset.mint(&payer, &1_000);
+    escrow.record_payment(&invoice_id, &payer, &1_000);
+
+    // Verify state was recorded.
+    let state = distributor.get_distribution_state(&escrow_id, &invoice_id);
+    assert_eq!(state.paid_distributed, 1_000);
+    assert!(!state.refund_distributed);
+
+    // Now simulate a failed reentrancy attempt by setting the lock.
+    env.as_contract(&distributor_id, || {
+        crate::storage::set_lock(&env, true);
+    });
+
+    // Attempt distribute_refund — it should fail due to ReentrancyDetected.
+    let addresses = soroban_sdk::vec![
+        &env,
+        payment_token.address.clone(),
+        buyer.clone()
+    ];
+    let amounts = soroban_sdk::vec![&env, 970i128, 970i128];
+    let result =
+        distributor.try_distribute_refund(&escrow_id, &invoice_id, &addresses, &amounts, &3u32);
+    assert_eq!(result, Err(Ok(Error::ReentrancyDetected)));
+
+    // State must be unchanged after the failed reentrancy attempt.
+    let state_after = distributor.get_distribution_state(&escrow_id, &invoice_id);
+    assert_eq!(state_after.paid_distributed, 1_000);
+    assert!(!state_after.refund_distributed);
+}
+
+/// Lock cleanup: verify the lock is released after a successful distribute_refund,
+/// allowing subsequent operations to proceed.
+#[test]
+fn test_integration_lock_cleared_after_distribute_refund_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let ctx = setup(&env, 300, true);
+    create_and_fund(&ctx, 1_000, 50_000);
+    env.ledger().set_timestamp(5_000);
+    ctx.payment_asset.mint(&ctx.payer, &1_000);
+
+    // Record partial payment then refund.
+    ctx.escrow.record_payment(&ctx.invoice_id, &ctx.payer, &400);
+    env.ledger().set_timestamp(50_001);
+    ctx.escrow.refund(&ctx.invoice_id);
+
+    // Verify refund was distributed.
+    let state = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &ctx.invoice_id);
+    assert!(state.refund_distributed);
+
+    // Verify lock is not stuck — we can still call distribute_payment on a new invoice.
+    let invoice_id2 = Symbol::new(&env, "INV_LOCK");
+    ctx.payment_asset.mint(&ctx.buyer, &500);
+    ctx.payment_asset.mint(&ctx.payer, &500);
+    ctx.escrow.create_escrow(
+        &invoice_id2,
+        &ctx.seller,
+        &ctx.payer,
+        &500,
+        &500,
+        &100_000,
+        &ctx.payment_token.address,
+        &ctx.inv_token.address,
+        &test_commitment(&ctx.escrow.env),
+        &None,
+    );
+    ctx.escrow.fund_escrow(&invoice_id2, &ctx.buyer, &500);
+    ctx.payment_asset.mint(&ctx.payer, &500);
+    ctx.escrow.record_payment(&invoice_id2, &ctx.payer, &500);
+
+    let state2 = ctx
+        .distributor
+        .get_distribution_state(&ctx.escrow_id, &invoice_id2);
+    assert_eq!(state2.paid_distributed, 500);
+}
