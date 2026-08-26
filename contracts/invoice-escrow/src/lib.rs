@@ -19,6 +19,22 @@ use types::{Config, EscrowData};
 
 use errors::Error;
 
+/// Reject the zero address (all-zero 32-byte Ed25519 key) which is never a valid participant.
+fn ensure_non_zero_address(env: &Env, address: &Address) -> Result<(), Error> {
+    // Convert address to its string representation and check for the well-known
+    // zero account (all 32 bytes are 0x00).  The StrKey encoding of the zero
+    // account is the constant below.
+    let zero_str = soroban_sdk::String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let zero = Address::from_string(&zero_str);
+    if *address == zero {
+        return Err(Error::InvalidAddress);
+    }
+    Ok(())
+}
+
 const MAX_BPS: u32 = 10_000;
 const DISTRIBUTE_PAYMENT_FN: &str = "distribute_payment";
 const DISTRIBUTE_REFUND_FN: &str = "distribute_refund";
@@ -37,6 +53,7 @@ fn ensure_not_paused(config: &Config) -> Result<(), Error> {
 impl InvoiceEscrow {
     /// Initialize the contract with admin and platform fee (basis points, e.g. 300 = 3%).
     pub fn initialize(env: Env, admin: Address, platform_fee_bps: u32) -> Result<(), Error> {
+        ensure_non_zero_address(&env, &admin)?;
         admin.require_auth();
         if storage::get_config(&env).is_some() {
             return Err(Error::AlreadyInit);
