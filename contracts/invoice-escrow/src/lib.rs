@@ -17,6 +17,7 @@ use types::{EmergencyApprovals, MultiSigConfig};
 
 // EscrowStatus is re-exported publicly; Config and EscrowData are crate-private.
 pub use types::EscrowStatus;
+pub use types::EarlySettlementConfig;
 use types::{Config, EscrowData, FundingInvoice, InvoiceStatus};
 
 use errors::Error;
@@ -205,6 +206,7 @@ impl InvoiceEscrow {
             status: EscrowStatus::Created,
             funding_milestone,
             commitment: commitment.clone(),
+            early_settlement: None,
         };
         storage::set_escrow(&env, invoice_id.clone(), &data);
         
@@ -317,6 +319,65 @@ impl InvoiceEscrow {
             EscrowStatus::Cancelled,
             env.ledger().timestamp(),
         );
+        Ok(())
+    }
+
+    /// Seller-only: attach or update the early-settlement discount hook for a Created or Funded escrow.
+    ///
+    /// Rules:
+    /// - Only callable by the escrow's seller.
+    /// - `discount_bps` must be in [1, 9999]. A zero discount is meaningless; 10 000 bps
+    ///   (100%) would collapse the effective face value to zero, so it is rejected.
+    /// - `cutoff_date` must be strictly in the future and must not exceed `due_dt`.
+    /// - Cannot be set on an escrow that has already reached a terminal state
+    ///   (Settled, Refunded, Cancelled).
+    /// - Can be called multiple times to update the config (e.g., extend the window
+    ///   or adjust the rate) as long as the escrow is still live.
+    pub fn set_early_settlement(
+        env: Env,
+        invoice_id: Symbol,
+        seller: Address,
+        discount_bps: u32,
+        cutoff_date: u64,
+    ) -> Result<(), Error> {
+        seller.require_auth();
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        ensure_not_paused(&config)?;
+
+        let mut data =
+            storage::get_escrow(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
+        if data.seller != seller {
+            return Err(Error::Unauthorized);
+        }
+
+        // Terminal states: hook can no longer be meaningful
+        match data.status {
+            EscrowStatus::Settled | EscrowStatus::Refunded | EscrowStatus::Cancelled => {
+                return Err(Error::InvalidEarlySettlement);
+            }
+            _ => {}
+        }
+
+        // Validate discount_bps: must be [1, 9999]
+        if discount_bps == 0 || discount_bps >= MAX_BPS {
+            return Err(Error::InvalidEarlySettlement);
+        }
+
+        // cutoff_date must be strictly in the future
+        let now = env.ledger().timestamp();
+        if cutoff_date <= now {
+            return Err(Error::InvalidEarlySettlement);
+        }
+        // cutoff_date must not exceed due_dt (no discount window past maturity)
+        if cutoff_date > data.due_dt {
+            return Err(Error::InvalidEarlySettlement);
+        }
+
+        data.early_settlement = Some(EarlySettlementConfig {
+            discount_bps,
+            cutoff_date,
+        });
+        storage::set_escrow(&env, invoice_id, &data);
         Ok(())
     }
 
@@ -512,9 +573,44 @@ impl InvoiceEscrow {
             return Err(Error::AlreadySettled);
         }
 
-        // Remaining balance toward face_value
-        let remaining = data
-            .face_value
+        // Compute effective face value: apply early-settlement discount if the hook
+        // is configured and the payment arrives strictly before the cutoff date.
+        let current_ts = env.ledger().timestamp();
+        let effective_face_value =
+            if let Some(ref es) = data.early_settlement {
+                if current_ts < es.cutoff_date {
+                    let discount = data
+                        .face_value
+                        .checked_mul(i128::from(es.discount_bps))
+                        .ok_or(Error::Overflow)?
+                        .checked_div(i128::from(MAX_BPS))
+                        .ok_or(Error::Overflow)?;
+                    let discounted = data
+                        .face_value
+                        .checked_sub(discount)
+                        .ok_or(Error::Overflow)?
+                        .max(1); // floor at 1 stroop
+                    // Emit the hook application event (only on first payment in the window
+                    // to avoid redundant emissions on subsequent partial payments).
+                    if data.paid_amt == 0 {
+                        events::early_settlement_applied(
+                            &env,
+                            invoice_id.clone(),
+                            es.discount_bps,
+                            data.face_value,
+                            discounted,
+                        );
+                    }
+                    discounted
+                } else {
+                    data.face_value
+                }
+            } else {
+                data.face_value
+            };
+
+        // Remaining balance toward effective face value
+        let remaining = effective_face_value
             .checked_sub(data.paid_amt)
             .ok_or(Error::Overflow)?;
         if amount > remaining {
@@ -538,8 +634,8 @@ impl InvoiceEscrow {
 
         data.paid_amt = data.paid_amt.checked_add(amount).ok_or(Error::Overflow)?;
 
-        // Settlement occurs when paid_amt reaches face_value
-        if data.paid_amt == data.face_value {
+        // Settlement occurs when paid_amt reaches effective face value
+        if data.paid_amt == effective_face_value {
             data.status = EscrowStatus::Settled;
         }
 
@@ -1161,6 +1257,8 @@ impl InvoiceEscrow {
             return Err(Error::EscrowNotFound);
         }
         Ok(storage::get_investor_position(&env, invoice_id, &investor))
+    }
+
     /// Paginated query to retrieve multiple escrows by sequential creation order.
     /// Returns a Vec of EscrowData for the requested range [start, start+limit).
     /// Maximum page size is 100. Returns empty Vec if start >= total_count.
@@ -1192,16 +1290,6 @@ impl InvoiceEscrow {
         }
         
         Ok(results)
-    }
-
-    /// Invest function allowing investors to commit funds to an open invoice.
-    /// Validates the invoice is in Created status and within funding deadline.
-    /// This is an alias for fund_escrow for semantic clarity.
-    pub fn invest(env: Env, invoice_id: soroban_sdk::BytesN<32>, investor: Address, amount: i128) -> Result<(), Error> {
-        investor.require_auth();
-        
-        let invoice_symbol = Symbol::new(&env, "temp");
-        Self::fund_escrow_core(&env, invoice_symbol, &investor, amount)
     }
 }
 

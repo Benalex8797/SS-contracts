@@ -90,4 +90,7 @@ pub enum Error {
     InvalidLimit = 37,
     /// Pagination limit exceeds maximum allowed page size.
     LimitExceeded = 38,
+    /// Early settlement discount configuration is invalid
+    /// (e.g., discount_bps is 0, exceeds 9999, or cutoff_date is not in the future).
+    InvalidEarlySettlement = 39,
 }

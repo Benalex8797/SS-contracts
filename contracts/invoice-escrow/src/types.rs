@@ -108,6 +108,9 @@ pub struct EscrowData {
     /// Commitment hash: immutable on-chain anchor for off-chain invoice data (PDF hash, ERP ID, etc.).
     /// Set at creation, cannot be modified. SHA-256 hash (32 bytes).
     pub commitment: soroban_sdk::BytesN<32>,
+    /// Optional early-settlement discount hook. If present, payments made before
+    /// `cutoff_date` receive a reduced effective face value.
+    pub early_settlement: Option<EarlySettlementConfig>,
 }
 
 /// Status for BytesN<32> funding invoices (position management).
@@ -139,6 +142,8 @@ pub struct FundingInvoice {
     pub status: InvoiceStatus,
     /// Payment token contract address.
     pub token: soroban_sdk::Address,
+}
+
 /// Multi-signature configuration for emergency releases.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,4 +160,26 @@ pub struct MultiSigConfig {
 pub struct EmergencyApprovals {
     /// List of admin addresses that have already approved this release.
     pub approvals: soroban_sdk::Vec<soroban_sdk::Address>,
+}
+
+/// Optional early-settlement discount hook configuration.
+///
+/// If set on an escrow, any `record_payment` whose ledger timestamp is strictly
+/// before `cutoff_date` will have the effective face value reduced by
+/// `discount_bps` basis points (e.g. 200 = 2%).  The discounted effective face
+/// value is floored to `1` so the escrow can always be settled.
+///
+/// The discount applies uniformly across all partial payments made before the
+/// cutoff; payments made on or after the cutoff are settled at the original
+/// `face_value`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EarlySettlementConfig {
+    /// Discount in basis points applied to `face_value` when payment is early.
+    /// Must be in [1, 9999] — a 0-bps discount is a no-op; 10000 bps (100%) is
+    /// rejected to prevent the effective face value from collapsing to 0.
+    pub discount_bps: u32,
+    /// Ledger timestamp deadline (exclusive): payment is "early" iff
+    /// `current_timestamp < cutoff_date`.
+    pub cutoff_date: u64,
 }
