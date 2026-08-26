@@ -2,7 +2,7 @@
 
 use soroban_sdk::{Address, Symbol};
 
-use crate::types::{Config, EscrowData, StorageKey};
+use crate::types::{Config, EmergencyApprovals, EscrowData, MultiSigConfig, StorageKey};
 
 /// Ledgers below which a persistent entry's TTL is extended (~7 days at 5s/ledger).
 const TTL_THRESHOLD: u32 = 120_960;
@@ -138,4 +138,33 @@ pub fn set_whitelisted(env: &soroban_sdk::Env, buyer: &Address, allowed: bool) {
             .persistent()
             .remove(&StorageKey::BuyerWhitelist(buyer.clone()));
     }
+}
+
+/// Load the emergency multi-sig admin configuration.
+pub fn get_emergency_config(env: &soroban_sdk::Env) -> Option<MultiSigConfig> {
+    env.storage().instance().get(&StorageKey::EmergencyConfig)
+}
+
+/// Save the emergency multi-sig admin configuration.
+pub fn set_emergency_config(env: &soroban_sdk::Env, config: &MultiSigConfig) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::EmergencyConfig, config);
+}
+
+/// Load the current emergency approvals for a given invoice.
+pub fn get_emergency_approvals(env: &soroban_sdk::Env, inv_id: &Symbol) -> EmergencyApprovals {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmergencyApprovals(inv_id.clone()))
+        .unwrap_or(EmergencyApprovals {
+            approvals: soroban_sdk::Vec::new(env),
+        })
+}
+
+/// Save emergency approvals for a given invoice.
+pub fn set_emergency_approvals(env: &soroban_sdk::Env, inv_id: &Symbol, approvals: &EmergencyApprovals) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyApprovals(inv_id.clone()), approvals);
 }

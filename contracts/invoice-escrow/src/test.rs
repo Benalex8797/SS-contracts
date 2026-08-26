@@ -8138,3 +8138,358 @@ fn test_settlement_emits_escrow_status_changed_event() {
     }
     assert!(found, "escrow_status_changed event not emitted");
 }
+
+// ── Duration boundary tests (#373) ────────────────────────────────────────
+
+#[test]
+fn test_create_escrow_exact_min_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt = TokenClient::new(&env, &pt_id.address());
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let due = now + MIN_ESCROW_DURATION_SECS;
+
+    c.create_escrow(
+        &Symbol::new(&env, "DUR_MIN"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due,
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "min_dur"),
+        &None,
+    );
+    assert_eq!(c.get_escrow_status(&Symbol::new(&env, "DUR_MIN")), EscrowStatus::Created);
+}
+
+#[test]
+fn test_create_escrow_below_min_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let due = now + MIN_ESCROW_DURATION_SECS - 1; // 1 second too short
+
+    let result = c.try_create_escrow(
+        &Symbol::new(&env, "DUR_BMIN"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due,
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "below_min"),
+        &None,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
+}
+
+#[test]
+fn test_create_escrow_exact_max_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let due = now + MAX_ESCROW_DURATION_SECS;
+
+    c.create_escrow(
+        &Symbol::new(&env, "DUR_MAX"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due,
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "max_dur"),
+        &None,
+    );
+    assert_eq!(c.get_escrow_status(&Symbol::new(&env, "DUR_MAX")), EscrowStatus::Created);
+}
+
+#[test]
+fn test_create_escrow_above_max_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let due = now + MAX_ESCROW_DURATION_SECS + 1; // 1 second too long
+
+    let result = c.try_create_escrow(
+        &Symbol::new(&env, "DUR_AMAX"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due,
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "above_max"),
+        &None,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
+}
+
+#[test]
+fn test_create_escrow_past_due_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+
+    let now = env.ledger().timestamp();
+    let due = now - 1; // in the past
+
+    let result = c.try_create_escrow(
+        &Symbol::new(&env, "DUR_PAST"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &due,
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "past_date"),
+        &None,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidDueDate)));
+}
+
+// ── Emergency multi-sig tests (#374) ──────────────────────────────────────
+
+#[test]
+fn test_emergency_release_1_of_1() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt = TokenClient::new(&env, &pt_id.address());
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    pt.asset.mint(&buyer, &1000);
+
+    let now = env.ledger().timestamp();
+    c.create_escrow(
+        &Symbol::new(&env, "EM1"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &(now + 3600),
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "em1"),
+        &None,
+    );
+    c.fund_escrow(&Symbol::new(&env, "EM1"), &buyer, &1000);
+
+    // Configure 1-of-1
+    let admins = soroban_sdk::vec![&env, admin.clone()];
+    let msig = MultiSigConfig {
+        admins,
+        threshold: 1,
+    };
+    c.set_emergency_config(&admin, &msig);
+
+    // Emergency release
+    c.emergency_release(&admin, &Symbol::new(&env, "EM1"));
+    assert_eq!(
+        c.get_escrow_status(&Symbol::new(&env, "EM1")),
+        EscrowStatus::Settled
+    );
+}
+
+#[test]
+fn test_emergency_release_2_of_3() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt = TokenClient::new(&env, &pt_id.address());
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    pt.asset.mint(&buyer, &1000);
+
+    let now = env.ledger().timestamp();
+    c.create_escrow(
+        &Symbol::new(&env, "EM2"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &(now + 3600),
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "em2"),
+        &None,
+    );
+    c.fund_escrow(&Symbol::new(&env, "EM2"), &buyer, &1000);
+
+    let a1 = Address::generate(&env);
+    let a2 = Address::generate(&env);
+    let a3 = Address::generate(&env);
+    let admins = soroban_sdk::vec![&env, a1.clone(), a2.clone(), a3.clone()];
+    let msig = MultiSigConfig {
+        admins,
+        threshold: 2,
+    };
+    c.set_emergency_config(&admin, &msig);
+
+    // First approval — threshold not met
+    let result = c.try_emergency_release(&a1, &Symbol::new(&env, "EM2"));
+    assert_eq!(result, Err(Ok(Error::ThresholdNotMet)));
+    assert_eq!(
+        c.get_escrow_status(&Symbol::new(&env, "EM2")),
+        EscrowStatus::Funded
+    );
+
+    // Second approval — threshold met
+    c.emergency_release(&a2, &Symbol::new(&env, "EM2"));
+    assert_eq!(
+        c.get_escrow_status(&Symbol::new(&env, "EM2")),
+        EscrowStatus::Settled
+    );
+}
+
+#[test]
+fn test_emergency_release_duplicate_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt = TokenClient::new(&env, &pt_id.address());
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    pt.asset.mint(&buyer, &1000);
+
+    let now = env.ledger().timestamp();
+    c.create_escrow(
+        &Symbol::new(&env, "EM3"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &(now + 3600),
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "em3"),
+        &None,
+    );
+    c.fund_escrow(&Symbol::new(&env, "EM3"), &buyer, &1000);
+
+    let admins = soroban_sdk::vec![&env, admin.clone()];
+    c.set_emergency_config(&admin, &MultiSigConfig { admins, threshold: 2 });
+
+    c.emergency_release(&admin, &Symbol::new(&env, "EM3")); // first — ok
+    let result = c.try_emergency_release(&admin, &Symbol::new(&env, "EM3")); // duplicate
+    assert_eq!(result, Err(Ok(Error::AlreadyApproved)));
+}
+
+#[test]
+fn test_emergency_release_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt = TokenClient::new(&env, &pt_id.address());
+    let inv_token = env.register_contract(None, MockInvoiceToken);
+    let seller = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    pt.asset.mint(&buyer, &1000);
+
+    let now = env.ledger().timestamp();
+    c.create_escrow(
+        &Symbol::new(&env, "EM4"),
+        &seller,
+        &seller,
+        &1000,
+        &1000,
+        &(now + 3600),
+        &pt_id.address(),
+        &inv_token,
+        &test_commitment(&env, "em4"),
+        &None,
+    );
+    c.fund_escrow(&Symbol::new(&env, "EM4"), &buyer, &1000);
+
+    let admins = soroban_sdk::vec![&env, admin.clone()];
+    c.set_emergency_config(&admin, &MultiSigConfig { admins, threshold: 1 });
+
+    let non_admin = Address::generate(&env);
+    let result = c.try_emergency_release(&non_admin, &Symbol::new(&env, "EM4"));
+    assert_eq!(result, Err(Ok(Error::NotEmergencyAdmin)));
+}
