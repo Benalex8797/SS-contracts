@@ -1,7 +1,7 @@
 #![allow(deprecated)]
 //! Event definitions for state changes (escrow_created, escrow_funded, payment_settled).
 
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
 use crate::types::EscrowStatus;
 
@@ -129,5 +129,69 @@ pub fn paused_updated(env: &Env, old_paused: bool, new_paused: bool) {
     env.events().publish(
         (Symbol::new(env, "paused_updated"),),
         (old_paused, new_paused),
+    );
+}
+
+/// Investment topped up event.
+pub fn investment_topped_up(
+    env: &Env,
+    investor: &Address,
+    invoice_id: BytesN<32>,
+    additional_amount: i128,
+    new_total_position: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "investment_topped_up"),
+            investor.clone(),
+            invoice_id.clone(),
+        ),
+        (additional_amount, new_total_position),
+    );
+}
+
+/// Investment partially refunded event.
+pub fn investment_partially_refunded(
+    env: &Env,
+    investor: &Address,
+    invoice_id: BytesN<32>,
+    amount_refunded: i128,
+    remaining_position: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "investment_partially_refunded"),
+            investor.clone(),
+            invoice_id.clone(),
+        ),
+        (amount_refunded, remaining_position),
+    );
+}
+
+/// Position transferred event.
+pub fn position_transferred(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    invoice_id: BytesN<32>,
+    position_amount: i128,
+    price: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "position_transferred"),
+            from.clone(),
+            to.clone(),
+            invoice_id.clone(),
+        ),
+        (position_amount, price),
+    );
+}
+
+/// Funding finalised event.
+pub fn funding_finalised(env: &Env, invoice_id: BytesN<32>, total_raised: i128, seller: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "funding_finalised"), invoice_id.clone()),
+        (total_raised, seller.clone()),
     );
 }

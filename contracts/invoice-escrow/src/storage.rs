@@ -140,6 +140,53 @@ pub fn set_whitelisted(env: &soroban_sdk::Env, buyer: &Address, allowed: bool) {
     }
 }
 
+// ── Funding invoice (BytesN<32>) storage for position management ───────
+
+use soroban_sdk::BytesN;
+
+use crate::types::FundingInvoice;
+
+pub fn get_invoice(env: &soroban_sdk::Env, invoice_id: BytesN<32>) -> Option<FundingInvoice> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::Invoice(invoice_id))
+}
+
+pub fn set_invoice(env: &soroban_sdk::Env, invoice_id: BytesN<32>, invoice: &FundingInvoice) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Invoice(invoice_id), invoice);
+}
+
+pub fn has_invoice(env: &soroban_sdk::Env, invoice_id: BytesN<32>) -> bool {
+    env.storage()
+        .persistent()
+        .has(&StorageKey::Invoice(invoice_id))
+}
+
+pub fn get_investor_position(
+    env: &soroban_sdk::Env,
+    invoice_id: BytesN<32>,
+    investor: &Address,
+) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::InvestorPosition(invoice_id, investor.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_investor_position(
+    env: &soroban_sdk::Env,
+    invoice_id: BytesN<32>,
+    investor: &Address,
+    amount: i128,
+) {
+    let key = StorageKey::InvestorPosition(invoice_id, investor.clone());
+    if amount == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &amount);
+    }
 /// Load the emergency multi-sig admin configuration.
 pub fn get_emergency_config(env: &soroban_sdk::Env) -> Option<MultiSigConfig> {
     env.storage().instance().get(&StorageKey::EmergencyConfig)

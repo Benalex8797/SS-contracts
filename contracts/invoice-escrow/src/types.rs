@@ -17,6 +17,10 @@ pub enum StorageKey {
     Nonce(soroban_sdk::Address),
     /// Persistent: buyer whitelist flag by buyer address.
     BuyerWhitelist(soroban_sdk::Address),
+    /// Persistent: funding invoice by BytesN<32> invoice id (new position management).
+    Invoice(soroban_sdk::BytesN<32>),
+    /// Persistent: investor position by (invoice_id BytesN<32>, investor address).
+    InvestorPosition(soroban_sdk::BytesN<32>, soroban_sdk::Address),
     /// Instance: emergency multi-sig admin configuration.
     EmergencyConfig,
     /// Persistent: approvals collected for a given invoice's emergency release.
@@ -106,6 +110,35 @@ pub struct EscrowData {
     pub commitment: soroban_sdk::BytesN<32>,
 }
 
+/// Status for BytesN<32> funding invoices (position management).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum InvoiceStatus {
+    Open = 0,
+    Funded = 1,
+}
+
+/// Funding invoice for secondary market position management (BytesN<32> invoices).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FundingInvoice {
+    /// Seller who will receive funds on finalisation.
+    pub seller: soroban_sdk::Address,
+    /// Total funding target.
+    pub funding_target: i128,
+    /// Total raised so far across all investors.
+    pub total_raised: i128,
+    /// Ledger deadline for funding (partial_refund only before this).
+    pub deadline_ledger: u32,
+    /// Minimum investment floor for remaining position after partial refund.
+    pub min_investment: i128,
+    /// Optional per-investor cap applied on top_up.
+    pub per_investor_cap: Option<i128>,
+    /// Current status.
+    pub status: InvoiceStatus,
+    /// Payment token contract address.
+    pub token: soroban_sdk::Address,
 /// Multi-signature configuration for emergency releases.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
