@@ -21,6 +21,10 @@ pub enum StorageKey {
     EmergencyConfig,
     /// Persistent: approvals collected for a given invoice's emergency release.
     EmergencyApprovals(soroban_sdk::Symbol),
+    /// Instance: total count of escrows created for indexing.
+    EscrowCount,
+    /// Persistent: invoice_id indexed by sequential creation order.
+    EscrowIdByIndex(u32),
 }
 
 /// Global contract configuration.

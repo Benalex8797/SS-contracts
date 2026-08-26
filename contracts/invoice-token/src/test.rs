@@ -2853,3 +2853,94 @@ fn test_mint_overflow_rejected() {
     assert_eq!(result, Err(Ok(crate::errors::Error::Overflow)));
     assert_eq!(client.balance(&recipient), max);
 }
+
+#[test]
+fn test_mint_zero_amount_rejected() {
+    let env = Env::default();
+    let (client, admin, minter) = setup_token(&env);
+    let recipient = Address::generate(&env);
+    
+    let result = client.try_mint(&recipient, &0, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidAmount)));
+}
+
+#[test]
+fn test_mint_negative_amount_rejected() {
+    let env = Env::default();
+    let (client, admin, minter) = setup_token(&env);
+    let recipient = Address::generate(&env);
+    
+    let result = client.try_mint(&recipient, &(-100), &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidAmount)));
+}
+
+#[test]
+fn test_mint_fractional_decimal_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(InvoiceToken, ());
+    let client = InvoiceTokenClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let minter = Address::generate(&env);
+    let name = SorobanString::from_str(&env, "Invoice");
+    let symbol = SorobanString::from_str(&env, "INV");
+    let invoice_id = Symbol::new(&env, "inv_001");
+    
+    client.initialize(&admin, &name, &symbol, &7u32, &invoice_id, &minter);
+    
+    let recipient = Address::generate(&env);
+    client.mint(&recipient, &1, &minter);
+    assert_eq!(client.balance(&recipient), 1);
+    
+    client.mint(&recipient, &9_999_999, &minter);
+    assert_eq!(client.balance(&recipient), 10_000_000);
+}
+
+#[test]
+fn test_mint_max_supply_overflow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let recipient = Address::generate(&env);
+    
+    let max_i128 = i128::MAX;
+    client.mint(&recipient, &max_i128, &minter);
+    
+    let result = client.try_mint(&recipient, &1, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::Overflow)));
+}
+
+#[test]
+fn test_persistent_storage_ttl_extension() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let recipient = Address::generate(&env);
+    
+    client.mint(&recipient, &1000, &minter);
+    
+    env.ledger().with_mut(|li| li.sequence_number += 100_000);
+    
+    let balance = client.balance(&recipient);
+    assert_eq!(balance, 1000);
+}
+
+#[test]
+fn test_storage_key_ttl_after_multiple_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+    let recipient = Address::generate(&env);
+    
+    client.mint(&recipient, &1000, &minter);
+    
+    env.ledger().with_mut(|li| li.sequence_number += 50_000);
+    
+    let other = Address::generate(&env);
+    client.approve(&recipient, &other, &500, &200_000);
+    
+    env.ledger().with_mut(|li| li.sequence_number += 50_000);
+    
+    let allowance = client.allowance(&recipient, &other);
+    assert_eq!(allowance, 500);
+}

@@ -168,3 +168,35 @@ pub fn set_emergency_approvals(env: &soroban_sdk::Env, inv_id: &Symbol, approval
         .persistent()
         .set(&StorageKey::EmergencyApprovals(inv_id.clone()), approvals);
 }
+
+/// Get the total count of escrows created (for pagination).
+pub fn get_escrow_count(env: &soroban_sdk::Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&StorageKey::EscrowCount)
+        .unwrap_or(0)
+}
+
+/// Increment the escrow count and return the new value.
+pub fn increment_escrow_count(env: &soroban_sdk::Env) -> u32 {
+    let count = get_escrow_count(env);
+    let new_count = count + 1;
+    env.storage()
+        .instance()
+        .set(&StorageKey::EscrowCount, &new_count);
+    new_count
+}
+
+/// Get the invoice_id at a specific index.
+pub fn get_escrow_id_by_index(env: &soroban_sdk::Env, index: u32) -> Option<Symbol> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EscrowIdByIndex(index))
+}
+
+/// Set the invoice_id at a specific index.
+pub fn set_escrow_id_by_index(env: &soroban_sdk::Env, index: u32, invoice_id: &Symbol) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EscrowIdByIndex(index), invoice_id);
+}

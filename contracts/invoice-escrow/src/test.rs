@@ -8493,3 +8493,127 @@ fn test_emergency_release_non_admin() {
     let result = c.try_emergency_release(&non_admin, &Symbol::new(&env, "EM4"));
     assert_eq!(result, Err(Ok(Error::NotEmergencyAdmin)));
 }
+
+#[test]
+fn test_get_escrows_empty_contract() {
+    let (env, c, _pt, _inv_token, _admin, _seller) = setup_escrow_test();
+    let result = c.get_escrows(&0, &10);
+    assert_eq!(result, Ok(soroban_sdk::Vec::new(&env)));
+}
+
+#[test]
+fn test_get_escrows_pagination() {
+    let (env, c, pt, inv_token, admin, seller) = setup_escrow_test();
+    let now = env.ledger().timestamp();
+    
+    for i in 0..5 {
+        let invoice_id = Symbol::new(&env, &format!("inv{}", i));
+        c.create_escrow(
+            &invoice_id,
+            &seller,
+            &seller,
+            &1000,
+            &900,
+            &(now + 3600),
+            &pt.address,
+            &inv_token,
+            &test_commitment(&env, &format!("inv{}", i)),
+            &None,
+        );
+    }
+    
+    let page1 = c.get_escrows(&0, &2).unwrap();
+    assert_eq!(page1.len(), 2);
+    
+    let page2 = c.get_escrows(&2, &2).unwrap();
+    assert_eq!(page2.len(), 2);
+    
+    let page3 = c.get_escrows(&4, &2).unwrap();
+    assert_eq!(page3.len(), 1);
+}
+
+#[test]
+fn test_get_escrows_invalid_limit_zero() {
+    let (env, c, _pt, _inv_token, _admin, _seller) = setup_escrow_test();
+    let result = c.try_get_escrows(&0, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidLimit)));
+}
+
+#[test]
+fn test_get_escrows_limit_exceeded() {
+    let (env, c, _pt, _inv_token, _admin, _seller) = setup_escrow_test();
+    let result = c.try_get_escrows(&0, &101);
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
+}
+
+#[test]
+fn test_get_escrows_start_beyond_count() {
+    let (env, c, pt, inv_token, admin, seller) = setup_escrow_test();
+    let now = env.ledger().timestamp();
+    
+    c.create_escrow(
+        &Symbol::new(&env, "inv1"),
+        &seller,
+        &seller,
+        &1000,
+        &900,
+        &(now + 3600),
+        &pt.address,
+        &inv_token,
+        &test_commitment(&env, "inv1"),
+        &None,
+    );
+    
+    let result = c.get_escrows(&10, &5).unwrap();
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_fund_escrow_signed_expired_signature_rejected() {
+    let (env, c, pt, inv_token, admin, seller) = setup_escrow_test();
+    let buyer = Address::generate(&env);
+    pt.asset.mint(&buyer, &1000);
+    
+    let now = env.ledger().timestamp();
+    c.create_escrow(
+        &Symbol::new(&env, "inv1"),
+        &seller,
+        &seller,
+        &1000,
+        &900,
+        &(now + 7200),
+        &pt.address,
+        &inv_token,
+        &test_commitment(&env, "inv1"),
+        &None,
+    );
+    
+    env.ledger().with_mut(|li| li.timestamp = now + 3600);
+    
+    let result = c.try_fund_escrow_signed(&Symbol::new(&env, "inv1"), &buyer, &500, &1, &(now + 1800));
+    assert_eq!(result, Err(Ok(Error::SignatureExpired)));
+}
+
+#[test]
+fn test_fund_escrow_signed_future_timestamp_succeeds() {
+    let (env, c, pt, inv_token, admin, seller) = setup_escrow_test();
+    let buyer = Address::generate(&env);
+    pt.asset.mint(&buyer, &1000);
+    
+    let now = env.ledger().timestamp();
+    c.create_escrow(
+        &Symbol::new(&env, "inv1"),
+        &seller,
+        &seller,
+        &1000,
+        &900,
+        &(now + 7200),
+        &pt.address,
+        &inv_token,
+        &test_commitment(&env, "inv1"),
+        &None,
+    );
+    
+    let result = c.fund_escrow_signed(&Symbol::new(&env, "inv1"), &buyer, &500, &1, &(now + 3600));
+    assert!(result.is_ok());
+}

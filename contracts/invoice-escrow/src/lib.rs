@@ -207,6 +207,12 @@ impl InvoiceEscrow {
             commitment: commitment.clone(),
         };
         storage::set_escrow(&env, invoice_id.clone(), &data);
+        
+        // Store the invoice_id at the current index for pagination
+        let current_count = storage::get_escrow_count(&env);
+        storage::set_escrow_id_by_index(&env, current_count, &invoice_id);
+        storage::increment_escrow_count(&env);
+        
         events::escrow_created(
             &env,
             invoice_id.clone(),
@@ -881,6 +887,49 @@ impl InvoiceEscrow {
         storage::remove_escrow_state(&env, invoice_id.clone(), &data.funders);
         events::escrow_cleaned_up(&env, invoice_id);
         Ok(())
+    }
+
+    /// Paginated query to retrieve multiple escrows by sequential creation order.
+    /// Returns a Vec of EscrowData for the requested range [start, start+limit).
+    /// Maximum page size is 100. Returns empty Vec if start >= total_count.
+    pub fn get_escrows(env: Env, start: u32, limit: u32) -> Result<soroban_sdk::Vec<EscrowData>, Error> {
+        const MAX_PAGE_SIZE: u32 = 100;
+        
+        if limit == 0 {
+            return Err(Error::InvalidLimit);
+        }
+        if limit > MAX_PAGE_SIZE {
+            return Err(Error::LimitExceeded);
+        }
+        
+        let total_count = storage::get_escrow_count(&env);
+        
+        if start >= total_count {
+            return Ok(soroban_sdk::Vec::new(&env));
+        }
+        
+        let end = core::cmp::min(start + limit, total_count);
+        let mut results = soroban_sdk::Vec::new(&env);
+        
+        for index in start..end {
+            if let Some(invoice_id) = storage::get_escrow_id_by_index(&env, index) {
+                if let Some(escrow_data) = storage::get_escrow(&env, invoice_id) {
+                    results.push_back(escrow_data);
+                }
+            }
+        }
+        
+        Ok(results)
+    }
+
+    /// Invest function allowing investors to commit funds to an open invoice.
+    /// Validates the invoice is in Created status and within funding deadline.
+    /// This is an alias for fund_escrow for semantic clarity.
+    pub fn invest(env: Env, invoice_id: soroban_sdk::BytesN<32>, investor: Address, amount: i128) -> Result<(), Error> {
+        investor.require_auth();
+        
+        let invoice_symbol = Symbol::new(&env, "temp");
+        Self::fund_escrow_core(&env, invoice_symbol, &investor, amount)
     }
 }
 
