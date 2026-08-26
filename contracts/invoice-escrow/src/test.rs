@@ -1272,7 +1272,7 @@ fn test_fund_escrow_zero_amount() {
 
     // Zero amount funding should fail
     let result = escrow_client.try_fund_escrow(&invoice_id, &buyer, &0);
-    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(result, Err(Ok(Error::ZeroAmount)));
 
     // Verify escrow is still in Created state
     assert_eq!(
@@ -4299,7 +4299,7 @@ fn test_error_invalid_amount() {
 
     assert_eq!(
         escrow_client.try_fund_escrow(&invoice_id, &buyer, &0),
-        Err(Ok(Error::InvalidAmount))
+        Err(Ok(Error::ZeroAmount))
     );
 
     assert_eq!(
@@ -7597,4 +7597,294 @@ fn test_escrow_state_unchanged_after_capacity_exceeded_panic() {
     assert_eq!(after.funder, before.funder);
     assert_eq!(after.funders.len(), before.funders.len());
     assert_eq!(after.paid_amt, before.paid_amt);
+}
+
+// ── Minimum investment enforcement ───────────────────────────────────────────
+//
+// Dust deposits waste ledger entries. When `min_investment` is configured:
+//   a) deposit at exactly the minimum succeeds
+//   b) deposit of minimum - 1 stroop → AmountBelowMinimum
+//   c) deposit of 0 → ZeroAmount
+//   d) deposit well above the minimum succeeds
+//   e) escrow state is unchanged after any rejected deposit
+
+fn setup_min_investment_escrow(
+    env: &Env,
+    min_investment: i128,
+    purchase_price: i128,
+) -> (
+    InvoiceEscrowClient<'_>,
+    Address,
+    Address,
+    Address,
+    Symbol,
+    AssetClient<'_>,
+) {
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(env, &escrow_id);
+    let admin = Address::generate(env);
+    let seller = Address::generate(env);
+    let buyer = Address::generate(env);
+    let payer = Address::generate(env);
+    let pt_admin = Address::generate(env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let pt_asset = AssetClient::new(env, &pt_id.address());
+    let inv_token_id = env.register(MockInvoiceToken, ());
+
+    client.initialize(&admin, &300);
+    client.set_min_investment(&admin, &min_investment);
+    pt_asset.mint(&buyer, &(purchase_price * 4));
+
+    let invoice_id = Symbol::new(env, "INV_MIN");
+    client.create_escrow(
+        &invoice_id,
+        &seller,
+        &payer,
+        &purchase_price,
+        &purchase_price,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &test_commitment(env, "min_investment"),
+        &None,
+    );
+
+    (client, admin, buyer, seller, invoice_id, pt_asset)
+}
+
+#[test]
+fn test_deposit_at_minimum_succeeds() {
+    let env = Env::default();
+    let min_investment: i128 = 1_000;
+    let purchase_price: i128 = 10_000;
+    let (client, _admin, buyer, _seller, invoice_id, _pt) =
+        setup_min_investment_escrow(&env, min_investment, purchase_price);
+
+    client.fund_escrow(&invoice_id, &buyer, &min_investment);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, min_investment);
+    assert_eq!(data.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_deposit_one_stroop_below_minimum_panics() {
+    let env = Env::default();
+    let min_investment: i128 = 1_000;
+    let purchase_price: i128 = 10_000;
+    let (client, _admin, buyer, _seller, invoice_id, _pt) =
+        setup_min_investment_escrow(&env, min_investment, purchase_price);
+
+    let below = min_investment - 1;
+    let result = client.try_fund_escrow(&invoice_id, &buyer, &below);
+    assert_eq!(result, Err(Ok(Error::AmountBelowMinimum)));
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, 0);
+    assert_eq!(data.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_deposit_zero_panics_with_zero_amount() {
+    let env = Env::default();
+    let min_investment: i128 = 1_000;
+    let purchase_price: i128 = 10_000;
+    let (client, _admin, buyer, _seller, invoice_id, _pt) =
+        setup_min_investment_escrow(&env, min_investment, purchase_price);
+
+    let result = client.try_fund_escrow(&invoice_id, &buyer, &0);
+    assert_eq!(result, Err(Ok(Error::ZeroAmount)));
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, 0);
+    assert_eq!(data.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_deposit_well_above_minimum_succeeds() {
+    let env = Env::default();
+    let min_investment: i128 = 1_000;
+    let purchase_price: i128 = 10_000;
+    let (client, _admin, buyer, _seller, invoice_id, _pt) =
+        setup_min_investment_escrow(&env, min_investment, purchase_price);
+
+    let large = min_investment * 5;
+    client.fund_escrow(&invoice_id, &buyer, &large);
+
+    let data = client.get_escrow(&invoice_id);
+    assert_eq!(data.funded_amt, large);
+    assert_eq!(data.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_escrow_state_unchanged_after_min_investment_panic() {
+    let env = Env::default();
+    let min_investment: i128 = 1_000;
+    let purchase_price: i128 = 10_000;
+    let (client, _admin, buyer, _seller, invoice_id, _pt) =
+        setup_min_investment_escrow(&env, min_investment, purchase_price);
+
+    // Seed a valid deposit first
+    client.fund_escrow(&invoice_id, &buyer, &min_investment);
+    let before = client.get_escrow(&invoice_id);
+
+    // Zero deposit rejected
+    assert_eq!(
+        client.try_fund_escrow(&invoice_id, &buyer, &0),
+        Err(Ok(Error::ZeroAmount))
+    );
+    let after_zero = client.get_escrow(&invoice_id);
+    assert_eq!(after_zero.funded_amt, before.funded_amt);
+    assert_eq!(after_zero.status, before.status);
+    assert_eq!(after_zero.funders.len(), before.funders.len());
+    assert_eq!(after_zero.paid_amt, before.paid_amt);
+
+    // Below-minimum deposit rejected
+    assert_eq!(
+        client.try_fund_escrow(&invoice_id, &buyer, &(min_investment - 1)),
+        Err(Ok(Error::AmountBelowMinimum))
+    );
+    let after_below = client.get_escrow(&invoice_id);
+    assert_eq!(after_below.funded_amt, before.funded_amt);
+    assert_eq!(after_below.status, before.status);
+    assert_eq!(after_below.funder, before.funder);
+    assert_eq!(after_below.funders.len(), before.funders.len());
+    assert_eq!(after_below.paid_amt, before.paid_amt);
+}
+
+/// Stored escrow metadata and escrow_created event payloads use the same
+/// encoding for invoice id and optional funding_milestone (present / absent).
+#[test]
+fn test_invoice_id_and_optional_metadata_event_encoding() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register(InvoiceEscrow, ());
+    let client = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let pt_admin = Address::generate(&env);
+    let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
+    let inv_token_id = env.register(MockInvoiceToken, ());
+    client.initialize(&admin, &300);
+
+    // Absent optional milestone
+    let short_id = Symbol::new(&env, "S");
+    let commitment = test_commitment(&env, "enc_none");
+    client.create_escrow(
+        &short_id,
+        &seller,
+        &payer,
+        &5_000,
+        &5_000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &commitment,
+        &None,
+    );
+
+    let events = env.events().all();
+    let mut decoded: Option<(Symbol, soroban_sdk::BytesN<32>, Option<i128>)> = None;
+    for i in 0..events.events().len() {
+        let event = events.events().get(i).unwrap();
+        let (_addr, topics, data) = parse_event(&env, event);
+        if let Some(first) = topics.get(0) {
+            let topic: Symbol = first.try_into_val(&env).unwrap();
+            if topic == Symbol::new(&env, "escrow_created") {
+                let (
+                    ev_id,
+                    _seller,
+                    _debtor,
+                    _fv,
+                    _pp,
+                    _due,
+                    _token,
+                    _inv,
+                    ev_commitment,
+                    ev_milestone,
+                ): (
+                    Symbol,
+                    Address,
+                    Address,
+                    i128,
+                    i128,
+                    u64,
+                    Address,
+                    Address,
+                    soroban_sdk::BytesN<32>,
+                    Option<i128>,
+                ) = data.try_into_val(&env).unwrap();
+                decoded = Some((ev_id, ev_commitment, ev_milestone));
+            }
+        }
+    }
+    let (ev_id_stored, ev_commitment_stored, ev_milestone_stored) =
+        decoded.expect("escrow_created event");
+
+    let stored = client.get_escrow(&short_id);
+    assert_eq!(stored.inv_id, short_id);
+    assert_eq!(stored.funding_milestone, None);
+    assert_eq!(stored.commitment, commitment);
+    assert_eq!(ev_id_stored, stored.inv_id);
+    assert_eq!(ev_commitment_stored, stored.commitment);
+    assert_eq!(ev_milestone_stored, stored.funding_milestone);
+
+    // Present optional milestone + max-length invoice id
+    let max_id = Symbol::new(&env, "abcdefghijklmnopqrstuvwxyz012345");
+    let commitment2 = test_commitment(&env, "enc_some");
+    let milestone = Some(250i128);
+    client.create_escrow(
+        &max_id,
+        &seller,
+        &payer,
+        &5_000,
+        &5_000,
+        &1_000_000,
+        &pt_id.address(),
+        &inv_token_id,
+        &commitment2,
+        &milestone,
+    );
+
+    let events2 = env.events().all();
+    let mut found_created2 = false;
+    let mut ev2_commitment = commitment2.clone();
+    let mut ev2_milestone: Option<i128> = None;
+    for i in 0..events2.events().len() {
+        let event = events2.events().get(i).unwrap();
+        let (_addr, topics, data) = parse_event(&env, event);
+        if let Some(first) = topics.get(0) {
+            let topic: Symbol = first.try_into_val(&env).unwrap();
+            if topic == Symbol::new(&env, "escrow_created") {
+                let (ev_id, _, _, _, _, _, _, _, ev_commitment, ev_milestone): (
+                    Symbol,
+                    Address,
+                    Address,
+                    i128,
+                    i128,
+                    u64,
+                    Address,
+                    Address,
+                    soroban_sdk::BytesN<32>,
+                    Option<i128>,
+                ) = data.try_into_val(&env).unwrap();
+                if ev_id == max_id {
+                    ev2_commitment = ev_commitment;
+                    ev2_milestone = ev_milestone;
+                    found_created2 = true;
+                }
+            }
+        }
+    }
+    assert!(found_created2);
+
+    let stored2 = client.get_escrow(&max_id);
+    assert_eq!(stored2.inv_id, max_id);
+    assert_eq!(stored2.funding_milestone, milestone);
+    assert_eq!(ev2_commitment, stored2.commitment);
+    assert_eq!(ev2_milestone, stored2.funding_milestone);
 }

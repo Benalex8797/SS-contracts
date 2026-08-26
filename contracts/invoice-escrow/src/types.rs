@@ -35,6 +35,10 @@ pub struct Config {
     /// Defaults to false (opt-in) so existing deployments/tests are unaffected
     /// until an admin explicitly enables it.
     pub whitelist_enabled: bool,
+    /// Minimum investment amount (stroops) accepted by `fund_escrow`.
+    /// `0` disables the floor (only `amount > 0` is required). Completing the
+    /// remaining capacity below this floor is always allowed.
+    pub min_investment: i128,
 }
 
 /// Lifecycle status of an escrow.

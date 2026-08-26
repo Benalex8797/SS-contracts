@@ -62,4 +62,8 @@ pub enum Error {
     InvalidInvoiceToken = 27,
     /// Payment token and invoice token must be different contracts.
     IdenticalTokens = 28,
+    /// Deposit amount is zero (dust prevention: use a positive amount).
+    ZeroAmount = 29,
+    /// Deposit amount is below the configured minimum investment.
+    AmountBelowMinimum = 30,
 }

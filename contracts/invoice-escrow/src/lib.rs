@@ -50,7 +50,24 @@ impl InvoiceEscrow {
             payment_distributor: None,
             paused: false,
             whitelist_enabled: false,
+            min_investment: 0,
         };
+        storage::set_config(&env, &config);
+        Ok(())
+    }
+
+    /// Admin-only: set the minimum investment amount for `fund_escrow`.
+    /// Pass `0` to disable the floor (deposits must still be strictly positive).
+    pub fn set_min_investment(env: Env, admin: Address, min_investment: i128) -> Result<(), Error> {
+        admin.require_auth();
+        if min_investment < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let mut config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        if config.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        config.min_investment = min_investment;
         storage::set_config(&env, &config);
         Ok(())
     }
@@ -323,7 +340,10 @@ impl InvoiceEscrow {
         amount: i128,
     ) -> Result<(), Error> {
         // Fail fast: validate amount before hitting storage.
-        if amount <= 0 {
+        if amount == 0 {
+            return Err(Error::ZeroAmount);
+        }
+        if amount < 0 {
             return Err(Error::InvalidAmount);
         }
         let config = storage::get_config(env).ok_or(Error::NotInit)?;
@@ -346,13 +366,22 @@ impl InvoiceEscrow {
             return Err(Error::InvalidAmount);
         }
 
+        let remaining_to_fund = data
+            .purchase_price
+            .checked_sub(data.funded_amt)
+            .ok_or(Error::Overflow)?;
+
+        // Enforce global minimum investment to prevent dust deposits, except when
+        // the funder is completing the exact remaining capacity.
+        if config.min_investment > 0
+            && amount != remaining_to_fund
+            && amount < config.min_investment
+        {
+            return Err(Error::AmountBelowMinimum);
+        }
+
         // Validate milestone constraints if a milestone is set
         if let Some(milestone) = data.funding_milestone {
-            let remaining_to_fund = data
-                .purchase_price
-                .checked_sub(data.funded_amt)
-                .ok_or(Error::Overflow)?;
-
             // Funder is always allowed to just fund exactly the remaining amount to complete the escrow.
             // If they are not completing the escrow, the amount must be at least the milestone and a multiple of it.
             if amount != remaining_to_fund && (amount < milestone || amount % milestone != 0) {
