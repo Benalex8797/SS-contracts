@@ -2700,3 +2700,156 @@ fn test_invoice_identifier_and_metadata_encoding() {
         assert_eq!(client.decimals(), 18);
     }
 }
+
+// ========== #387: Dedicated Error Branch Tests ==========
+
+#[test]
+fn test_mint_unauthorized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    let recipient = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_mint(&recipient, &100, &stranger);
+    assert_eq!(result, Err(Ok(crate::errors::Error::Unauthorized)));
+    assert_eq!(client.balance(&recipient), 0);
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_negative_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+
+    let recipient = Address::generate(&env);
+    let result = client.try_mint(&recipient, &(-1i128), &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidAmount)));
+    assert_eq!(client.balance(&recipient), 0);
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_zero_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+
+    let recipient = Address::generate(&env);
+    let result = client.try_mint(&recipient, &0, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidAmount)));
+    assert_eq!(client.balance(&recipient), 0);
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_paused_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+
+    client.set_paused(&true);
+    let recipient = Address::generate(&env);
+    let result = client.try_mint(&recipient, &100, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::Paused)));
+    assert_eq!(client.balance(&recipient), 0);
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_batch_unauthorized_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _minter) = setup_token(&env);
+
+    let recipients = soroban_sdk::vec![&env, Address::generate(&env)];
+    let amounts = soroban_sdk::vec![&env, 100i128];
+    let stranger = Address::generate(&env);
+
+    let result = client.try_mint_batch(&recipients, &amounts, &stranger);
+    assert_eq!(result, Err(Ok(crate::errors::Error::Unauthorized)));
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_batch_negative_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+
+    let recipients = soroban_sdk::vec![&env, Address::generate(&env)];
+    let amounts = soroban_sdk::vec![&env, -1i128];
+
+    let result = client.try_mint_batch(&recipients, &amounts, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::InvalidAmount)));
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_batch_paused_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, minter) = setup_token(&env);
+
+    client.set_paused(&true);
+    let recipients = soroban_sdk::vec![&env, Address::generate(&env)];
+    let amounts = soroban_sdk::vec![&env, 100i128];
+
+    let result = client.try_mint_batch(&recipients, &amounts, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::Paused)));
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_mint_batch_length_mismatch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+
+    let recipients = soroban_sdk::vec![&env, Address::generate(&env), Address::generate(&env)];
+    let amounts = soroban_sdk::vec![&env, 100i128];
+
+    let result = client.try_mint_batch(&recipients, &amounts, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::BatchLengthMismatch)));
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_transfer_from_locked_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+
+    let sender = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    client.mint(&sender, &1000, &minter);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&sender, &spender, &500, &expiration);
+
+    assert!(client.transfer_locked());
+    let result = client.try_transfer_from(&spender, &sender, &recipient, &100);
+    assert_eq!(result, Err(Ok(crate::errors::Error::TransferLocked)));
+    assert_eq!(client.balance(&sender), 1000);
+    assert_eq!(client.balance(&recipient), 0);
+}
+
+#[test]
+fn test_mint_overflow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, minter) = setup_token(&env);
+
+    let recipient = Address::generate(&env);
+    let max = i128::MAX;
+
+    client.mint(&recipient, &max, &minter);
+    assert_eq!(client.balance(&recipient), max);
+
+    let result = client.try_mint(&recipient, &1, &minter);
+    assert_eq!(result, Err(Ok(crate::errors::Error::Overflow)));
+    assert_eq!(client.balance(&recipient), max);
+}
