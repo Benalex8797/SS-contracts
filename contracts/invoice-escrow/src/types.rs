@@ -29,6 +29,31 @@ pub enum StorageKey {
     EscrowCount,
     /// Persistent: invoice_id indexed by sequential creation order.
     EscrowIdByIndex(u32),
+    /// Persistent: invoice metadata and parameters by BytesN<32>.
+    InvoiceRecord(soroban_sdk::BytesN<32>),
+}
+
+/// Registered invoice metadata and funding parameters stored in persistent storage.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvoiceData {
+    /// Invoice identifier (32 bytes).
+    pub invoice_id: soroban_sdk::BytesN<32>,
+    /// Face value: total amount owed by debtor.
+    pub face_value: i128,
+    /// Funding target: total funding amount to raise.
+    pub funding_target: i128,
+    /// Yield rate in basis points (1 to 5000).
+    pub yield_bps: u32,
+    /// Funding deadline (ledger sequence).
+    pub deadline_ledger: u32,
+    /// Total amount raised so far from investors.
+    pub total_raised: i128,
+    /// Current lifecycle status.
+    pub status: EscrowStatus,
+    /// List of investor addresses.
+    pub investors: soroban_sdk::Vec<soroban_sdk::Address>,
+}
 }
 
 /// Global contract configuration.
@@ -139,6 +164,7 @@ pub struct FundingInvoice {
     pub status: InvoiceStatus,
     /// Payment token contract address.
     pub token: soroban_sdk::Address,
+}
 /// Multi-signature configuration for emergency releases.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

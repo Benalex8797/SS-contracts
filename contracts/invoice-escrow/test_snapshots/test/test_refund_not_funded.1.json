@@ -53,7 +53,7 @@
                   "i128": "1000"
                 },
                 {
-                  "u64": "1000"
+                  "u64": "3600"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
@@ -125,7 +125,7 @@
                       "symbol": "due_dt"
                     },
                     "val": {
-                      "u64": "1000"
+                      "u64": "3600"
                     }
                   },
                   {
@@ -226,7 +226,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 518400
+        "live_until": 1036800
       },
       {
         "entry": {
@@ -309,7 +309,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1036800
       },
       {
         "entry": {
@@ -363,7 +363,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1036800
       }
     ]
   },

@@ -96,7 +96,7 @@
                   "i128": "1000"
                 },
                 {
-                  "u64": "500"
+                  "u64": "3600"
                 },
                 {
                   "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
@@ -166,7 +166,7 @@
   "ledger": {
     "protocol_version": 27,
     "sequence_number": 0,
-    "timestamp": 600,
+    "timestamp": 3700,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -255,7 +255,7 @@
                       "symbol": "due_dt"
                     },
                     "val": {
-                      "u64": "500"
+                      "u64": "3600"
                     }
                   },
                   {
@@ -362,7 +362,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 518400
+        "live_until": 1036800
       },
       {
         "entry": {
@@ -392,7 +392,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1036800
       },
       {
         "entry": {
@@ -475,7 +475,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1036800
       },
       {
         "entry": {
@@ -808,7 +808,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1036800
       }
     ]
   },
@@ -890,7 +890,7 @@
                   "u32": 3
                 },
                 {
-                  "u64": "600"
+                  "u64": "3700"
                 }
               ]
             }

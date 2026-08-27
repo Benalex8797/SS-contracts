@@ -1,66 +1,73 @@
-//! Storage helpers: instance for config, persistent for escrow data.
+//! Storage helpers: instance for config, persistent for escrow data, invoice records, and positions.
 
-use soroban_sdk::{Address, Symbol};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
-use crate::types::{Config, EmergencyApprovals, EscrowData, MultiSigConfig, StorageKey};
+use crate::types::{
+    Config, EmergencyApprovals, EscrowData, InvoiceData, MultiSigConfig, StorageKey,
+};
 
 /// Ledgers below which a persistent entry's TTL is extended (~7 days at 5s/ledger).
-const TTL_THRESHOLD: u32 = 120_960;
-/// Ledgers to extend a persistent entry's TTL to when bumped (~30 days at 5s/ledger).
-const TTL_EXTEND_TO: u32 = 518_400;
+pub const TTL_THRESHOLD: u32 = 120_960;
+/// Minimum TTL extension in ledger units (~60 days at 5s/ledger: 60 * 24 * 3600 / 5 = 1,036,800 ledgers).
+pub const MIN_TTL_EXTEND: u32 = 1_036_800;
 
-/// Extend the TTL of an escrow's persistent storage entry so it survives
-/// ledger pruning across the full lifetime of a (potentially long-lived,
-/// e.g. multi-month) invoice, not just the archival minimum.
-pub fn extend_ttl(env: &soroban_sdk::Env, inv_id: Symbol) {
-    env.storage().persistent().extend_ttl(
-        &StorageKey::Escrow(inv_id),
-        TTL_THRESHOLD,
-        TTL_EXTEND_TO,
-    );
+/// Extend the TTL of any persistent storage entry to at least 60 days in ledger units.
+pub fn bump_persistent(env: &Env, key: &StorageKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_THRESHOLD, MIN_TTL_EXTEND);
 }
 
-/// Load contract config from instance storage.
-pub fn get_config(env: &soroban_sdk::Env) -> Option<Config> {
+
+/// Load contract config from instance storage, bumping instance TTL.
+pub fn get_config(env: &Env) -> Option<Config> {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, MIN_TTL_EXTEND);
     env.storage().instance().get(&StorageKey::Config)
 }
 
-/// Save contract config to instance storage.
-pub fn set_config(env: &soroban_sdk::Env, config: &Config) {
+/// Save contract config to instance storage, bumping instance TTL.
+pub fn set_config(env: &Env, config: &Config) {
     env.storage().instance().set(&StorageKey::Config, config);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, MIN_TTL_EXTEND);
 }
 
 /// Load escrow data for an invoice from persistent storage.
 /// Extends the entry's TTL on every access so actively-used escrows never
 /// expire mid-lifecycle regardless of how long between state transitions.
-pub fn get_escrow(env: &soroban_sdk::Env, inv_id: Symbol) -> Option<EscrowData> {
-    let data = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::Escrow(inv_id.clone()));
+pub fn get_escrow(env: &Env, inv_id: Symbol) -> Option<EscrowData> {
+    let key = StorageKey::Escrow(inv_id.clone());
+    let data = env.storage().persistent().get(&key);
     if data.is_some() {
-        extend_ttl(env, inv_id);
+        bump_persistent(env, &key);
     }
     data
 }
 
 /// Save escrow data for an invoice to persistent storage, extending its TTL.
-pub fn set_escrow(env: &soroban_sdk::Env, inv_id: Symbol, data: &EscrowData) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Escrow(inv_id.clone()), data);
-    extend_ttl(env, inv_id);
+pub fn set_escrow(env: &Env, inv_id: Symbol, data: &EscrowData) {
+    let key = StorageKey::Escrow(inv_id.clone());
+    env.storage().persistent().set(&key, data);
+    bump_persistent(env, &key);
 }
 
 /// Check if an escrow exists for the given invoice.
-pub fn has_escrow(env: &soroban_sdk::Env, inv_id: Symbol) -> bool {
-    env.storage().persistent().has(&StorageKey::Escrow(inv_id))
+pub fn has_escrow(env: &Env, inv_id: Symbol) -> bool {
+    let key = StorageKey::Escrow(inv_id);
+    let exists = env.storage().persistent().has(&key);
+    if exists {
+        bump_persistent(env, &key);
+    }
+    exists
 }
 
 /// Remove escrow data and all per-funder contribution records for an invoice from
 /// persistent storage (storage footprint cleanup).
 pub fn remove_escrow_state(
-    env: &soroban_sdk::Env,
+    env: &Env,
     inv_id: Symbol,
     funders: &soroban_sdk::Vec<Address>,
 ) {
@@ -75,68 +82,70 @@ pub fn remove_escrow_state(
 }
 
 /// Get the highest nonce consumed so far for a buyer's signed off-chain approvals.
-pub fn get_nonce(env: &soroban_sdk::Env, buyer: &soroban_sdk::Address) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::Nonce(buyer.clone()))
-        .unwrap_or(0)
+pub fn get_nonce(env: &Env, buyer: &Address) -> u64 {
+    let key = StorageKey::Nonce(buyer.clone());
+    let nonce = env.storage().persistent().get(&key).unwrap_or(0);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    nonce
 }
 
 /// Record the highest nonce consumed for a buyer's signed off-chain approvals.
-pub fn set_nonce(env: &soroban_sdk::Env, buyer: &soroban_sdk::Address, nonce: u64) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Nonce(buyer.clone()), &nonce);
+pub fn set_nonce(env: &Env, buyer: &Address, nonce: u64) {
+    let key = StorageKey::Nonce(buyer.clone());
+    env.storage().persistent().set(&key, &nonce);
+    bump_persistent(env, &key);
 }
 
 /// Get the amount funded by a specific funder for an invoice.
 pub fn get_funder_amount(
-    env: &soroban_sdk::Env,
+    env: &Env,
     inv_id: Symbol,
-    funder: &soroban_sdk::Address,
+    funder: &Address,
 ) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::FunderAmount(inv_id, funder.clone()))
-        .unwrap_or(0)
+    let key = StorageKey::FunderAmount(inv_id, funder.clone());
+    let amount = env.storage().persistent().get(&key).unwrap_or(0);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    amount
 }
 
 /// Set the amount funded by a specific funder for an invoice.
 pub fn set_funder_amount(
-    env: &soroban_sdk::Env,
+    env: &Env,
     inv_id: Symbol,
-    funder: &soroban_sdk::Address,
+    funder: &Address,
     amount: i128,
 ) {
+    let key = StorageKey::FunderAmount(inv_id, funder.clone());
     if amount == 0 {
-        env.storage()
-            .persistent()
-            .remove(&StorageKey::FunderAmount(inv_id, funder.clone()));
+        env.storage().persistent().remove(&key);
     } else {
-        env.storage()
-            .persistent()
-            .set(&StorageKey::FunderAmount(inv_id, funder.clone()), &amount);
+        env.storage().persistent().set(&key, &amount);
+        bump_persistent(env, &key);
     }
 }
 
 /// Whether `buyer` is whitelisted to fund (buy) escrows. Absent entry = not whitelisted.
-pub fn is_whitelisted(env: &soroban_sdk::Env, buyer: &Address) -> bool {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::BuyerWhitelist(buyer.clone()))
-        .unwrap_or(false)
+pub fn is_whitelisted(env: &Env, buyer: &Address) -> bool {
+    let key = StorageKey::BuyerWhitelist(buyer.clone());
+    let whitelisted = env.storage().persistent().get(&key).unwrap_or(false);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    whitelisted
 }
 
 /// Set (or clear) a buyer's whitelist status.
-pub fn set_whitelisted(env: &soroban_sdk::Env, buyer: &Address, allowed: bool) {
+pub fn set_whitelisted(env: &Env, buyer: &Address, allowed: bool) {
+    let key = StorageKey::BuyerWhitelist(buyer.clone());
     if allowed {
-        env.storage()
-            .persistent()
-            .set(&StorageKey::BuyerWhitelist(buyer.clone()), &true);
+        env.storage().persistent().set(&key, &true);
+        bump_persistent(env, &key);
     } else {
-        env.storage()
-            .persistent()
-            .remove(&StorageKey::BuyerWhitelist(buyer.clone()));
+        env.storage().persistent().remove(&key);
     }
 }
 
@@ -188,32 +197,98 @@ pub fn set_investor_position(
         env.storage().persistent().set(&key, &amount);
     }
 /// Load the emergency multi-sig admin configuration.
-pub fn get_emergency_config(env: &soroban_sdk::Env) -> Option<MultiSigConfig> {
+pub fn get_emergency_config(env: &Env) -> Option<MultiSigConfig> {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, MIN_TTL_EXTEND);
     env.storage().instance().get(&StorageKey::EmergencyConfig)
 }
 
 /// Save the emergency multi-sig admin configuration.
-pub fn set_emergency_config(env: &soroban_sdk::Env, config: &MultiSigConfig) {
+pub fn set_emergency_config(env: &Env, config: &MultiSigConfig) {
     env.storage()
         .instance()
         .set(&StorageKey::EmergencyConfig, config);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, MIN_TTL_EXTEND);
 }
 
 /// Load the current emergency approvals for a given invoice.
-pub fn get_emergency_approvals(env: &soroban_sdk::Env, inv_id: &Symbol) -> EmergencyApprovals {
-    env.storage()
+pub fn get_emergency_approvals(env: &Env, inv_id: &Symbol) -> EmergencyApprovals {
+    let key = StorageKey::EmergencyApprovals(inv_id.clone());
+    let approvals = env
+        .storage()
         .persistent()
-        .get(&StorageKey::EmergencyApprovals(inv_id.clone()))
+        .get(&key)
         .unwrap_or(EmergencyApprovals {
             approvals: soroban_sdk::Vec::new(env),
-        })
+        });
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    approvals
 }
 
 /// Save emergency approvals for a given invoice.
-pub fn set_emergency_approvals(env: &soroban_sdk::Env, inv_id: &Symbol, approvals: &EmergencyApprovals) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::EmergencyApprovals(inv_id.clone()), approvals);
+pub fn set_emergency_approvals(env: &Env, inv_id: &Symbol, approvals: &EmergencyApprovals) {
+    let key = StorageKey::EmergencyApprovals(inv_id.clone());
+    env.storage().persistent().set(&key, approvals);
+    bump_persistent(env, &key);
+}
+
+/// Load invoice record by BytesN<32>.
+pub fn get_invoice_record(env: &Env, inv_id: &BytesN<32>) -> Option<InvoiceData> {
+    let key = StorageKey::InvoiceRecord(inv_id.clone());
+    let data: Option<InvoiceData> = env.storage().persistent().get(&key);
+    if data.is_some() {
+        bump_persistent(env, &key);
+    }
+    data
+}
+
+/// Save invoice record by BytesN<32>, bumping its persistent TTL.
+pub fn set_invoice_record(env: &Env, inv_id: &BytesN<32>, data: &InvoiceData) {
+    let key = StorageKey::InvoiceRecord(inv_id.clone());
+    env.storage().persistent().set(&key, data);
+    bump_persistent(env, &key);
+}
+
+/// Check if an invoice record exists for BytesN<32>.
+pub fn has_invoice_record(env: &Env, inv_id: &BytesN<32>) -> bool {
+    let key = StorageKey::InvoiceRecord(inv_id.clone());
+    let exists = env.storage().persistent().has(&key);
+    if exists {
+        bump_persistent(env, &key);
+    }
+    exists
+}
+
+/// Get investor position for (invoice_id, investor).
+pub fn get_investor_position(env: &Env, inv_id: &BytesN<32>, investor: &Address) -> i128 {
+    let key = StorageKey::InvestorPosition(inv_id.clone(), investor.clone());
+    let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    amount
+}
+
+/// Set investor position for (invoice_id, investor).
+pub fn set_investor_position(env: &Env, inv_id: &BytesN<32>, investor: &Address, amount: i128) {
+    let key = StorageKey::InvestorPosition(inv_id.clone(), investor.clone());
+    if amount == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &amount);
+        bump_persistent(env, &key);
+    }
+}
+
+/// Remove investor position for (invoice_id, investor).
+pub fn remove_investor_position(env: &Env, inv_id: &BytesN<32>, investor: &Address) {
+    let key = StorageKey::InvestorPosition(inv_id.clone(), investor.clone());
+    env.storage().persistent().remove(&key);
 }
 
 /// Get the total count of escrows created (for pagination).

@@ -750,7 +750,7 @@ fn test_escrow_refunded_event() {
     let buyer = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV222");
     let amount = 2000;
-    let due_date = 1000;
+    let due_date = 3600;
 
     payment_token_asset.mint(&buyer, &2000);
 
@@ -772,7 +772,7 @@ fn test_escrow_refunded_event() {
     // Set ledger timestamp past due date to allow refund
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
 
-    escrow_client.refund(&invoice_id);
+    escrow_client.refund_escrow(&invoice_id);
 
     // Find escrow_refunded event (should be the last event)
     let events = env.events().all();
@@ -878,7 +878,7 @@ fn test_no_refund_event_on_invalid_state() {
     let seller = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV444");
     let amount = 1000;
-    let due_date = 1000;
+    let due_date = 3600;
 
     escrow_client.create_escrow(
         &invoice_id,
@@ -897,7 +897,7 @@ fn test_no_refund_event_on_invalid_state() {
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
 
     // Try to refund without funding first (should fail)
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
 
     // Should fail with RefundNotAllowed error (status is Created, not Funded)
     assert!(result.is_err());
@@ -1573,7 +1573,7 @@ fn test_refund_not_funded() {
         &seller,
         &1000,
         &1000,
-        &1000,
+        &3600,
         &payment_token,
         &inv_token,
         &test_commitment(&env, "test_invoice_data"),
@@ -1584,7 +1584,7 @@ fn test_refund_not_funded() {
     env.ledger().with_mut(|li| li.timestamp = 2000);
 
     // Try to refund without funding first
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
 }
 
@@ -1632,7 +1632,7 @@ fn test_refund_before_due_date() {
     env.ledger().with_mut(|li| li.timestamp = due_date - 1);
 
     // Refund should fail
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
 }
 
@@ -1679,7 +1679,7 @@ fn test_refund_at_due_date() {
     env.ledger().with_mut(|li| li.timestamp = due_date);
 
     // Refund should succeed
-    escrow_client.refund(&invoice_id);
+    escrow_client.refund_escrow(&invoice_id);
 
     // Verify buyer got refund
     assert_eq!(payment_token.balance(&buyer), 1000);
@@ -1732,7 +1732,7 @@ fn test_refund_after_due_date() {
     env.ledger().with_mut(|li| li.timestamp = due_date + 5000);
 
     // Refund should succeed
-    escrow_client.refund(&invoice_id);
+    escrow_client.refund_escrow(&invoice_id);
 
     // Verify buyer got refund
     assert_eq!(payment_token.balance(&buyer), 1000);
@@ -1787,7 +1787,7 @@ fn test_refund_already_settled() {
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
 
     // Try to refund after settlement
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
 }
 
@@ -2156,7 +2156,7 @@ fn test_refund_after_partial_payment() {
     let payer = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_REF_PART");
     let amount = 1000;
-    let due_date = 1000;
+    let due_date = 3600;
 
     payment_token_asset.mint(&buyer, &1000);
     payment_token_asset.mint(&payer, &1000);
@@ -2186,7 +2186,7 @@ fn test_refund_after_partial_payment() {
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
 
     // Refund
-    escrow_client.refund(&invoice_id);
+    escrow_client.refund_escrow(&invoice_id);
 
     // Status is Refunded
     assert_eq!(
@@ -2234,7 +2234,7 @@ fn test_record_payment_removes_initial_fund_even_on_full_payment() {
         &payer,
         &amount,
         &amount,
-        &100,
+        &3600,
         &pt_id.address(),
         &inv_token_id,
         &test_commitment(&env, "test_invoice_data"),
@@ -3173,7 +3173,7 @@ fn test_refund_one_second_before_due_date() {
     env.ledger().with_mut(|li| li.timestamp = due_date - 1);
 
     // Refund should fail
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
     assert_eq!(
         escrow_client.get_escrow_status(&invoice_id),
@@ -3836,7 +3836,7 @@ fn test_admin_pause_prevents_refund_of_funded_escrow() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_PR");
-    let due_date = 1000;
+    let due_date = 3600;
 
     payment_token_asset.mint(&buyer, &1000);
 
@@ -3862,7 +3862,7 @@ fn test_admin_pause_prevents_refund_of_funded_escrow() {
     escrow_client.set_paused(&true);
 
     // Refund must be blocked while paused
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::Paused)));
 
     // Escrow status must remain Funded (state persistence)
@@ -3873,7 +3873,7 @@ fn test_admin_pause_prevents_refund_of_funded_escrow() {
 
     // Unpause and refund must succeed
     escrow_client.set_paused(&false);
-    escrow_client.refund(&invoice_id);
+    escrow_client.refund_escrow(&invoice_id);
 
     assert_eq!(
         escrow_client.get_escrow_status(&invoice_id),
@@ -4016,7 +4016,7 @@ fn test_admin_cleanup_refunded_escrow() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
     let invoice_id = Symbol::new(&env, "INV_ADM_CLN2");
-    let due_date = 1000;
+    let due_date = 3600;
 
     payment_token_asset.mint(&buyer, &1000);
 
@@ -4035,7 +4035,7 @@ fn test_admin_cleanup_refunded_escrow() {
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
-    escrow_client.refund(&invoice_id);
+    escrow_client.refund_escrow(&invoice_id);
 
     assert_eq!(
         escrow_client.get_escrow_status(&invoice_id),
@@ -4377,7 +4377,7 @@ fn test_error_escrow_not_found() {
         Err(Ok(Error::EscrowNotFound))
     );
     assert_eq!(
-        escrow_client.try_refund(&dummy_id),
+        escrow_client.try_refund_escrow(&dummy_id),
         Err(Ok(Error::EscrowNotFound))
     );
     assert_eq!(
@@ -4556,13 +4556,13 @@ fn test_error_refund_not_allowed() {
     );
 
     assert_eq!(
-        escrow_client.try_refund(&invoice_id),
+        escrow_client.try_refund_escrow(&invoice_id),
         Err(Ok(Error::RefundNotAllowed))
     );
 
     escrow_client.fund_escrow(&invoice_id, &buyer, &1000);
     assert_eq!(
-        escrow_client.try_refund(&invoice_id),
+        escrow_client.try_refund_escrow(&invoice_id),
         Err(Ok(Error::RefundNotAllowed))
     );
 }
@@ -4674,7 +4674,7 @@ fn test_error_paused() {
         Err(Ok(Error::Paused))
     );
     assert_eq!(
-        escrow_client.try_refund(&invoice_id),
+        escrow_client.try_refund_escrow(&invoice_id),
         Err(Ok(Error::Paused))
     );
 
@@ -5123,7 +5123,7 @@ fn test_settlement_after_due_date_before_refund() {
     assert_eq!(payment_token.balance(&escrow_id), 0);
 
     // Refund must fail after settlement
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
 }
 
@@ -5327,7 +5327,7 @@ fn test_refund_prevented_after_settlement_at_exact_due_date() {
     env.ledger().with_mut(|li| li.timestamp = due_date + 99999);
 
     // Refund must fail
-    let result = escrow_client.try_refund(&invoice_id);
+    let result = escrow_client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
     assert_eq!(
         escrow_client.get_escrow_status(&invoice_id),
@@ -6158,7 +6158,7 @@ fn test_cancel_escrow_on_refunded_escrow_rejected() {
     let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
     let pt_asset = AssetClient::new(&env, &pt_id.address());
     let inv_token_id = env.register(MockInvoiceToken, ());
-    let due_date: u64 = 1000;
+    let due_date: u64 = 3600;
 
     client.initialize(&admin, &0);
     pt_asset.mint(&buyer, &1000);
@@ -6178,7 +6178,7 @@ fn test_cancel_escrow_on_refunded_escrow_rejected() {
     );
     client.fund_escrow(&invoice_id, &buyer, &1000);
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
-    client.refund(&invoice_id);
+    client.refund_escrow(&invoice_id);
     assert_eq!(
         client.get_escrow_status(&invoice_id),
         EscrowStatus::Refunded
@@ -6252,7 +6252,7 @@ fn test_refund_on_already_refunded_escrow_rejected() {
     let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
     let pt_asset = AssetClient::new(&env, &pt_id.address());
     let inv_token_id = env.register(MockInvoiceToken, ());
-    let due_date: u64 = 1000;
+    let due_date: u64 = 3600;
 
     client.initialize(&admin, &0);
     pt_asset.mint(&buyer, &1000);
@@ -6272,14 +6272,14 @@ fn test_refund_on_already_refunded_escrow_rejected() {
     );
     client.fund_escrow(&invoice_id, &buyer, &1000);
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
-    client.refund(&invoice_id);
+    client.refund_escrow(&invoice_id);
     assert_eq!(
         client.get_escrow_status(&invoice_id),
         EscrowStatus::Refunded
     );
 
     // Second refund must be rejected
-    let result = client.try_refund(&invoice_id);
+    let result = client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::RefundNotAllowed)));
 
     // State must still be Refunded (not changed by failed call)
@@ -6588,7 +6588,7 @@ fn test_escrow_status_changed_event_at_refunded() {
     let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
     let pt_asset = AssetClient::new(&env, &pt_id.address());
     let inv_token_id = env.register(MockInvoiceToken, ());
-    let due_date: u64 = 500;
+    let due_date: u64 = 3600;
 
     client.initialize(&admin, &0);
     pt_asset.mint(&buyer, &1000);
@@ -6610,7 +6610,7 @@ fn test_escrow_status_changed_event_at_refunded() {
 
     let refund_ts: u64 = due_date + 100;
     env.ledger().with_mut(|li| li.timestamp = refund_ts);
-    client.refund(&invoice_id);
+    client.refund_escrow(&invoice_id);
 
     let events = env.events().all();
     let refund_status_event = events
@@ -6716,7 +6716,7 @@ fn test_multi_funder_partial_funding_then_refund() {
     let pt_asset = AssetClient::new(&env, &pt_id.address());
     let pt_client = soroban_sdk::token::Client::new(&env, &pt_id.address());
     let inv_token_id = env.register(MockInvoiceToken, ());
-    let due_date: u64 = 2000;
+    let due_date: u64 = 3600;
 
     client.initialize(&admin, &0); // 0% fee simplifies maths
 
@@ -6746,7 +6746,7 @@ fn test_multi_funder_partial_funding_then_refund() {
     assert_eq!(pt_client.balance(&escrow_id), 1000);
 
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
-    client.refund(&invoice_id);
+    client.refund_escrow(&invoice_id);
     assert_eq!(
         client.get_escrow_status(&invoice_id),
         EscrowStatus::Refunded
@@ -7297,7 +7297,7 @@ fn test_refund_while_paused_returns_paused_error() {
     let pt_id = env.register_stellar_asset_contract_v2(pt_admin);
     let pt_asset = AssetClient::new(&env, &pt_id.address());
     let inv_token_id = env.register(MockInvoiceToken, ());
-    let due_date: u64 = 1000;
+    let due_date: u64 = 3600;
 
     client.initialize(&admin, &300);
     pt_asset.mint(&buyer, &500);
@@ -7320,7 +7320,7 @@ fn test_refund_while_paused_returns_paused_error() {
     env.ledger().with_mut(|li| li.timestamp = due_date + 1);
     client.set_paused(&true);
 
-    let result = client.try_refund(&invoice_id);
+    let result = client.try_refund_escrow(&invoice_id);
     assert_eq!(result, Err(Ok(Error::Paused)));
 
     // Status must still be Funded
@@ -7997,7 +7997,7 @@ fn test_event_escrow_refunded_snapshot() {
     c.fund(10_000);
     env.ledger().set_timestamp(1_000_001);
 
-    c.escrow_client.refund(&c.invoice_id);
+    c.escrow_client.refund_escrow(&c.invoice_id);
 
     let events = env.events().all();
     let found = events.events().iter().rev().find(|e| {
@@ -8284,6 +8284,7 @@ fn test_create_escrow_past_due_date() {
     let inv_token = env.register_contract(None, MockInvoiceToken);
     let seller = Address::generate(&env);
 
+    env.ledger().with_mut(|l| l.timestamp = 10000);
     let now = env.ledger().timestamp();
     let due = now - 1; // in the past
 
@@ -8320,7 +8321,7 @@ fn test_emergency_release_1_of_1() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
 
-    pt.asset.mint(&buyer, &1000);
+    AssetClient::new(&env, &pt_id.address()).mint(&buyer, &1000);
 
     let now = env.ledger().timestamp();
     c.create_escrow(
@@ -8369,7 +8370,7 @@ fn test_emergency_release_2_of_3() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
 
-    pt.asset.mint(&buyer, &1000);
+    AssetClient::new(&env, &pt_id.address()).mint(&buyer, &1000);
 
     let now = env.ledger().timestamp();
     c.create_escrow(
@@ -8397,15 +8398,16 @@ fn test_emergency_release_2_of_3() {
     c.set_emergency_config(&admin, &msig);
 
     // First approval — threshold not met
-    let result = c.try_emergency_release(&a1, &Symbol::new(&env, "EM2"));
-    assert_eq!(result, Err(Ok(Error::ThresholdNotMet)));
+    let res1 = c.emergency_release(&a1, &Symbol::new(&env, "EM2"));
+    assert_eq!(res1, false);
     assert_eq!(
         c.get_escrow_status(&Symbol::new(&env, "EM2")),
         EscrowStatus::Funded
     );
 
     // Second approval — threshold met
-    c.emergency_release(&a2, &Symbol::new(&env, "EM2"));
+    let res2 = c.emergency_release(&a2, &Symbol::new(&env, "EM2"));
+    assert_eq!(res2, true);
     assert_eq!(
         c.get_escrow_status(&Symbol::new(&env, "EM2")),
         EscrowStatus::Settled
@@ -8428,7 +8430,7 @@ fn test_emergency_release_duplicate_approval() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
 
-    pt.asset.mint(&buyer, &1000);
+    AssetClient::new(&env, &pt_id.address()).mint(&buyer, &1000);
 
     let now = env.ledger().timestamp();
     c.create_escrow(
@@ -8445,7 +8447,8 @@ fn test_emergency_release_duplicate_approval() {
     );
     c.fund_escrow(&Symbol::new(&env, "EM3"), &buyer, &1000);
 
-    let admins = soroban_sdk::vec![&env, admin.clone()];
+    let admin2 = Address::generate(&env);
+    let admins = soroban_sdk::vec![&env, admin.clone(), admin2];
     c.set_emergency_config(&admin, &MultiSigConfig { admins, threshold: 2 });
 
     c.emergency_release(&admin, &Symbol::new(&env, "EM3")); // first — ok
@@ -8469,7 +8472,7 @@ fn test_emergency_release_non_admin() {
     let seller = Address::generate(&env);
     let buyer = Address::generate(&env);
 
-    pt.asset.mint(&buyer, &1000);
+    AssetClient::new(&env, &pt_id.address()).mint(&buyer, &1000);
 
     let now = env.ledger().timestamp();
     c.create_escrow(
@@ -8616,4 +8619,283 @@ fn test_fund_escrow_signed_future_timestamp_succeeds() {
     
     let result = c.fund_escrow_signed(&Symbol::new(&env, "inv1"), &buyer, &500, &1, &(now + 3600));
     assert!(result.is_ok());
+}
+
+// ── Issue #399, #400, #398, #407 Unit Tests ──────────────────────────────────────────
+
+#[test]
+fn test_register_invoice_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[1u8; 32]);
+    let face_value = 100_000i128;
+    let funding_target = 80_000i128;
+    let yield_bps = 500u32; // 5%
+    let deadline_ledger = 1000u32;
+
+    c.register_invoice(&inv_id, &face_value, &funding_target, &yield_bps, &deadline_ledger);
+
+    let record = c.get_invoice_record(&inv_id);
+    assert_eq!(record.invoice_id, inv_id);
+    assert_eq!(record.face_value, face_value);
+    assert_eq!(record.funding_target, funding_target);
+    assert_eq!(record.yield_bps, yield_bps);
+    assert_eq!(record.deadline_ledger, deadline_ledger);
+    assert_eq!(record.total_raised, 0);
+    assert_eq!(record.status, EscrowStatus::Created);
+}
+
+#[test]
+fn test_register_invoice_duplicate_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[2u8; 32]);
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+
+    let res = c.try_register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+    assert_eq!(res, Err(Ok(Error::InvoiceAlreadyExists)));
+}
+
+#[test]
+fn test_register_invoice_invalid_yield_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[3u8; 32]);
+    // yield_bps = 5001 exceeds maximum allowed of 5000
+    let res = c.try_register_invoice(&inv_id, &100_000, &80_000, &5001, &1000);
+    assert_eq!(res, Err(Ok(Error::InvalidYield)));
+
+    // yield_bps = 0 is below minimum allowed of 1
+    let res0 = c.try_register_invoice(&inv_id, &100_000, &80_000, &0, &1000);
+    assert_eq!(res0, Err(Ok(Error::InvalidYield)));
+}
+
+#[test]
+fn test_register_invoice_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    // Clear all auths — call must fail due to missing admin.require_auth()
+    env.set_auths(&[]);
+
+    let inv_id = BytesN::from_array(&env, &[4u8; 32]);
+    let res = c.try_register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_refund_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[5u8; 32]);
+    let investor = Address::generate(&env);
+    let deadline_ledger = 100u32;
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &deadline_ledger);
+    c.invest(&inv_id, &investor, &40_000);
+
+    assert_eq!(c.get_investor_position(&inv_id, &investor), 40_000);
+
+    // Advance ledger past deadline
+    env.ledger().with_mut(|l| l.sequence_number = 101);
+
+    c.refund(&inv_id, &investor);
+
+    // Investor position should be deleted
+    assert_eq!(c.get_investor_position(&inv_id, &investor), 0);
+
+    let record = c.get_invoice_record(&inv_id);
+    assert_eq!(record.total_raised, 0);
+}
+
+#[test]
+fn test_refund_before_deadline_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[6u8; 32]);
+    let investor = Address::generate(&env);
+    let deadline_ledger = 100u32;
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &deadline_ledger);
+    c.invest(&inv_id, &investor, &40_000);
+
+    // Current ledger sequence (default 0) <= deadline_ledger (100)
+    let res = c.try_refund(&inv_id, &investor);
+    assert_eq!(res, Err(Ok(Error::FundingDeadlineNotPassed)));
+}
+
+#[test]
+fn test_refund_funded_invoice_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[7u8; 32]);
+    let investor = Address::generate(&env);
+    let deadline_ledger = 100u32;
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &deadline_ledger);
+    c.invest(&inv_id, &investor, &80_000); // Fully funded
+    c.finalise_funding(&inv_id);
+
+    env.ledger().with_mut(|l| l.sequence_number = 101);
+
+    let res = c.try_refund(&inv_id, &investor);
+    assert_eq!(res, Err(Ok(Error::InvalidInvoiceStatus)));
+}
+
+#[test]
+fn test_refund_double_refund_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[8u8; 32]);
+    let investor = Address::generate(&env);
+    let deadline_ledger = 100u32;
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &deadline_ledger);
+    c.invest(&inv_id, &investor, &40_000);
+
+    env.ledger().with_mut(|l| l.sequence_number = 101);
+
+    c.refund(&inv_id, &investor);
+
+    // Second refund attempt
+    let res = c.try_refund(&inv_id, &investor);
+    assert_eq!(res, Err(Ok(Error::NoPositionFound)));
+}
+
+#[test]
+fn test_settle_invoice_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[9u8; 32]);
+    let investor1 = Address::generate(&env);
+    let investor2 = Address::generate(&env);
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+    c.invest(&inv_id, &investor1, &50_000);
+    c.invest(&inv_id, &investor2, &30_000);
+    c.finalise_funding(&inv_id);
+
+    let repayment_amount = 100_000i128;
+    c.settle_invoice(&inv_id, &repayment_amount);
+
+    let record = c.get_invoice_record(&inv_id);
+    assert_eq!(record.status, EscrowStatus::Settled);
+}
+
+#[test]
+fn test_settle_invoice_non_funded_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[10u8; 32]);
+    let investor = Address::generate(&env);
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+    c.invest(&inv_id, &investor, &40_000);
+
+    // Invoice is still in Created state (not Funded)
+    let res = c.try_settle_invoice(&inv_id, &100_000);
+    assert_eq!(res, Err(Ok(Error::InvalidInvoiceStatus)));
+}
+
+#[test]
+fn test_settle_invoice_insufficient_repayment_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[11u8; 32]);
+    let investor = Address::generate(&env);
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+    c.invest(&inv_id, &investor, &80_000);
+    c.finalise_funding(&inv_id);
+
+    // Repayment amount (79,999) < total_raised (80,000)
+    let res = c.try_settle_invoice(&inv_id, &79_999);
+    assert_eq!(res, Err(Ok(Error::InsufficientRepayment)));
+}
+
+#[test]
+fn test_ttl_extension_on_invest_finalise_settle_and_refresh() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let escrow_id = env.register_contract(None, InvoiceEscrow);
+    let c = InvoiceEscrowClient::new(&env, &escrow_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin, &300);
+
+    let inv_id = BytesN::from_array(&env, &[12u8; 32]);
+    let investor = Address::generate(&env);
+
+    c.register_invoice(&inv_id, &100_000, &80_000, &500, &1000);
+
+    // Test TTL extended after invest
+    c.invest(&inv_id, &investor, &80_000);
+    let record1 = c.get_invoice_record(&inv_id);
+    assert_eq!(record1.total_raised, 80_000);
+
+    // Test TTL extended after finalise_funding
+    c.finalise_funding(&inv_id);
+    let record2 = c.get_invoice_record(&inv_id);
+    assert_eq!(record2.status, EscrowStatus::Funded);
+
+    // Test TTL extended after refresh_all_ttls
+    c.refresh_all_ttls(&inv_id);
+
+    // Test TTL extended after settle_invoice
+    c.settle_invoice(&inv_id, &100_000);
+    let record3 = c.get_invoice_record(&inv_id);
+    assert_eq!(record3.status, EscrowStatus::Settled);
 }

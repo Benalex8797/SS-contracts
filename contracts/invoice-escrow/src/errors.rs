@@ -90,4 +90,16 @@ pub enum Error {
     InvalidLimit = 37,
     /// Pagination limit exceeds maximum allowed page size.
     LimitExceeded = 38,
+    /// Invoice with the given ID already exists.
+    InvoiceAlreadyExists = 39,
+    /// Yield basis points is invalid (must be between 1 and 5000).
+    InvalidYield = 40,
+    /// Funding deadline has not passed yet.
+    FundingDeadlineNotPassed = 41,
+    /// Invoice status is invalid for the requested operation.
+    InvalidInvoiceStatus = 42,
+    /// No position found for the investor on this invoice.
+    NoPositionFound = 43,
+    /// Repayment amount is less than the total raised amount.
+    InsufficientRepayment = 44,
 }
