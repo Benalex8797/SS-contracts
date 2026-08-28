@@ -13,12 +13,11 @@ mod types;
 
 use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, IntoVal, Symbol};
 
-use types::{EmergencyApprovals, MultiSigConfig};
+use types::MultiSigConfig;
 
-// EscrowStatus is re-exported publicly; Config and EscrowData are crate-private.
+// EscrowStatus is re-exported publicly; Config, EscrowData, and InvoiceData are crate-private.
 pub use types::EscrowStatus;
-pub use types::EarlySettlementConfig;
-use types::{Config, EscrowData, FundingInvoice, InvoiceStatus};
+use types::{Config, EscrowData, FundingInvoice, InvoiceData, InvoiceStatus};
 
 use errors::Error;
 
@@ -726,7 +725,7 @@ impl InvoiceEscrow {
 
     /// Refund the investors if the invoice was not paid by due date. Anyone may call.
     /// Refunds are distributed pro-rata based on each investor's contribution.
-    pub fn refund(env: Env, invoice_id: Symbol) -> Result<(), Error> {
+    pub fn refund_escrow(env: Env, invoice_id: Symbol) -> Result<(), Error> {
         let config = storage::get_config(&env).ok_or(Error::NotInit)?;
         ensure_not_paused(&config)?;
         let mut data =
@@ -898,7 +897,7 @@ impl InvoiceEscrow {
     /// Emergency multi-sig release: an admin approves releasing funds for an invoice.
     /// When the threshold is reached, funds are paid out to the seller and the escrow
     /// is marked as Settled.
-    pub fn emergency_release(env: Env, caller: Address, invoice_id: Symbol) -> Result<(), Error> {
+    pub fn emergency_release(env: Env, caller: Address, invoice_id: Symbol) -> Result<bool, Error> {
         caller.require_auth();
         let config = storage::get_emergency_config(&env).ok_or(Error::EmergencyNotConfigured)?;
 
@@ -926,8 +925,8 @@ impl InvoiceEscrow {
         approvals.approvals.push_back(caller.clone());
         storage::set_emergency_approvals(&env, &invoice_id, &approvals);
 
-        if approvals.approvals.len() as u32 < config.threshold {
-            return Err(Error::ThresholdNotMet);
+        if (approvals.approvals.len() as u32) < config.threshold {
+            return Ok(false);
         }
 
         // Threshold reached — execute emergency release
@@ -962,7 +961,7 @@ impl InvoiceEscrow {
             EscrowStatus::Settled,
             env.ledger().timestamp(),
         );
-        Ok(())
+        Ok(true)
     }
 
     /// Reclaim persistent storage for an escrow that has reached a terminal state
@@ -1041,7 +1040,7 @@ impl InvoiceEscrow {
         if invoice.status != InvoiceStatus::Open {
             return Err(Error::InvalidInvoiceStatus);
         }
-        let current = storage::get_investor_position(&env, invoice_id.clone(), &investor);
+        let current = storage::get_investor_position(&env, &invoice_id, &investor);
         if current == 0 {
             return Err(Error::NoPositionFound);
         }
@@ -1067,7 +1066,7 @@ impl InvoiceEscrow {
             &env.current_contract_address(),
             &additional_amount,
         );
-        storage::set_investor_position(&env, invoice_id.clone(), &investor, new_total_position);
+        storage::set_investor_position(&env, &invoice_id, &investor, new_total_position);
         invoice.total_raised = new_total_raised;
         storage::set_invoice(&env, invoice_id.clone(), &invoice);
         events::investment_topped_up(
@@ -1080,49 +1079,141 @@ impl InvoiceEscrow {
         Ok(())
     }
 
-    /// Initial investment helper for FundingInvoice flow (used to set up position before top_up).
+    // ---------- Invoice Registration, Investment, Refund, Settlement & TTL Refresh ----------
+
+    /// Register invoice metadata and funding parameters on-chain. Callable only by admin.
+    pub fn register_invoice(
+        env: Env,
+        invoice_id: BytesN<32>,
+        face_value: i128,
+        funding_target: i128,
+        yield_bps: u32,
+        deadline_ledger: u32,
+    ) -> Result<(), Error> {
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        config.admin.require_auth();
+
+        if face_value <= 0 || funding_target <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if !(1..=5000).contains(&yield_bps) {
+            return Err(Error::InvalidYield);
+        }
+        if storage::has_invoice_record(&env, &invoice_id) {
+            return Err(Error::InvoiceAlreadyExists);
+        }
+
+        let data = InvoiceData {
+            invoice_id: invoice_id.clone(),
+            face_value,
+            funding_target,
+            yield_bps,
+            deadline_ledger,
+            total_raised: 0,
+            status: EscrowStatus::Created,
+            investors: soroban_sdk::Vec::new(&env),
+        };
+
+        storage::set_invoice_record(&env, &invoice_id, &data);
+        events::invoice_registered(
+            &env,
+            &invoice_id,
+            face_value,
+            funding_target,
+            yield_bps,
+            deadline_ledger,
+        );
+        Ok(())
+    }
+
+    /// Invest in a registered invoice or funding invoice.
     pub fn invest(
         env: Env,
-        investor: Address,
         invoice_id: BytesN<32>,
+        investor: Address,
         amount: i128,
     ) -> Result<(), Error> {
         investor.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        let mut invoice =
-            storage::get_invoice(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
-        if invoice.status != InvoiceStatus::Open {
-            return Err(Error::InvalidInvoiceStatus);
-        }
-        if amount < invoice.min_investment {
-            return Err(Error::BelowMinimumInvestment);
-        }
-        if let Some(cap) = invoice.per_investor_cap {
-            if amount > cap {
+
+        if let Some(mut invoice) = storage::get_invoice(&env, invoice_id.clone()) {
+            if invoice.status != InvoiceStatus::Open {
+                return Err(Error::InvalidInvoiceStatus);
+            }
+            if amount < invoice.min_investment {
+                return Err(Error::BelowMinimumInvestment);
+            }
+            if let Some(cap) = invoice.per_investor_cap {
+                if amount > cap {
+                    return Err(Error::InvalidAmount);
+                }
+            }
+            let new_total = invoice
+                .total_raised
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
+            if new_total > invoice.funding_target {
                 return Err(Error::InvalidAmount);
             }
+            let current = storage::get_investor_position(&env, &invoice_id, &investor);
+            let new_pos = current.checked_add(amount).ok_or(Error::Overflow)?;
+            if let Some(cap) = invoice.per_investor_cap {
+                if new_pos > cap {
+                    return Err(Error::InvalidAmount);
+                }
+            }
+            let token_client = token::Client::new(&env, &invoice.token);
+            token_client.transfer(&investor, &env.current_contract_address(), &amount);
+            storage::set_investor_position(&env, &invoice_id, &investor, new_pos);
+            invoice.total_raised = new_total;
+            storage::set_invoice(&env, invoice_id, &invoice);
+            return Ok(());
         }
-        let new_total = invoice
+
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        ensure_not_paused(&config)?;
+
+        let mut record =
+            storage::get_invoice_record(&env, &invoice_id).ok_or(Error::EscrowNotFound)?;
+        if record.status != EscrowStatus::Created {
+            return Err(Error::InvalidInvoiceStatus);
+        }
+        let current_ledger = env.ledger().sequence();
+        if current_ledger > record.deadline_ledger {
+            return Err(Error::FundingDeadlineNotPassed);
+        }
+
+        let new_raised = record
             .total_raised
             .checked_add(amount)
             .ok_or(Error::Overflow)?;
-        if new_total > invoice.funding_target {
+        if new_raised > record.funding_target {
             return Err(Error::InvalidAmount);
         }
-        let current = storage::get_investor_position(&env, invoice_id.clone(), &investor);
-        let new_pos = current.checked_add(amount).ok_or(Error::Overflow)?;
-        if let Some(cap) = invoice.per_investor_cap {
-            if new_pos > cap {
-                return Err(Error::InvalidAmount);
+
+        let current_pos = storage::get_investor_position(&env, &invoice_id, &investor);
+        let new_pos = current_pos.checked_add(amount).ok_or(Error::Overflow)?;
+        storage::set_investor_position(&env, &invoice_id, &investor, new_pos);
+
+        let mut already_in = false;
+        for inv in record.investors.iter() {
+            if inv == investor {
+                already_in = true;
+                break;
             }
         }
-        let token_client = token::Client::new(&env, &invoice.token);
-        token_client.transfer(&investor, &env.current_contract_address(), &amount);
-        storage::set_investor_position(&env, invoice_id.clone(), &investor, new_pos);
-        invoice.total_raised = new_total;
-        storage::set_invoice(&env, invoice_id, &invoice);
+        if !already_in {
+            record.investors.push_back(investor.clone());
+        }
+
+        record.total_raised = new_raised;
+        if record.total_raised == record.funding_target {
+            record.status = EscrowStatus::Funded;
+        }
+
+        storage::set_invoice_record(&env, &invoice_id, &record);
         Ok(())
     }
 
@@ -1146,7 +1237,7 @@ impl InvoiceEscrow {
         if current_ledger >= invoice.deadline_ledger {
             return Err(Error::InvalidInvoiceStatus);
         }
-        let current = storage::get_investor_position(&env, invoice_id.clone(), &investor);
+        let current = storage::get_investor_position(&env, &invoice_id, &investor);
         if current == 0 {
             return Err(Error::NoPositionFound);
         }
@@ -1164,7 +1255,7 @@ impl InvoiceEscrow {
         // Transfer back to caller
         let token_client = token::Client::new(&env, &invoice.token);
         token_client.transfer(&env.current_contract_address(), &investor, &amount);
-        storage::set_investor_position(&env, invoice_id.clone(), &investor, remaining);
+        storage::set_investor_position(&env, &invoice_id, &investor, remaining);
         invoice.total_raised = new_total_raised;
         storage::set_invoice(&env, invoice_id.clone(), &invoice);
         events::investment_partially_refunded(&env, &investor, invoice_id, amount, remaining);
@@ -1188,20 +1279,16 @@ impl InvoiceEscrow {
         if invoice.status != InvoiceStatus::Funded {
             return Err(Error::InvalidInvoiceStatus);
         }
-        let position = storage::get_investor_position(&env, invoice_id.clone(), &from);
+        let position = storage::get_investor_position(&env, &invoice_id, &from);
         if position == 0 {
             return Err(Error::NoPositionFound);
         }
-        // Collect price from buyer to seller (token transfer price if >0)
-        // Require both parties to authenticate
         to.require_auth();
         if price > 0 {
             let token_client = token::Client::new(&env, &invoice.token);
             token_client.transfer(&to, &from, &price);
-        } else if price < 0 {
-            return Err(Error::InvalidAmount);
         }
-        let buyer_existing = storage::get_investor_position(&env, invoice_id.clone(), &to);
+        let buyer_existing = storage::get_investor_position(&env, &invoice_id, &to);
         let new_buyer_pos = buyer_existing
             .checked_add(position)
             .ok_or(Error::Overflow)?;
@@ -1210,35 +1297,140 @@ impl InvoiceEscrow {
                 return Err(Error::InvalidAmount);
             }
         }
-        storage::set_investor_position(&env, invoice_id.clone(), &from, 0);
-        storage::set_investor_position(&env, invoice_id.clone(), &to, new_buyer_pos);
+        storage::set_investor_position(&env, &invoice_id, &from, 0);
+        storage::set_investor_position(&env, &invoice_id, &to, new_buyer_pos);
         events::position_transferred(&env, &from, &to, invoice_id, position, price);
         Ok(())
     }
 
     /// Finalise funding: transition Open->Funded when target reached, release proceeds to seller.
     pub fn finalise_funding(env: Env, invoice_id: BytesN<32>) -> Result<(), Error> {
-        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
-        config.admin.require_auth();
-        let mut invoice =
-            storage::get_invoice(&env, invoice_id.clone()).ok_or(Error::EscrowNotFound)?;
-        if invoice.status != InvoiceStatus::Open {
+        if let Some(mut invoice) = storage::get_invoice(&env, invoice_id.clone()) {
+            let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+            config.admin.require_auth();
+            if invoice.status != InvoiceStatus::Open {
+                return Err(Error::InvalidInvoiceStatus);
+            }
+            if invoice.total_raised < invoice.funding_target {
+                return Err(Error::FundingTargetNotReached);
+            }
+            invoice.status = InvoiceStatus::Funded;
+            storage::set_invoice(&env, invoice_id.clone(), &invoice);
+            if invoice.total_raised > 0 {
+                let token_client = token::Client::new(&env, &invoice.token);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &invoice.seller,
+                    &invoice.total_raised,
+                );
+            }
+            events::funding_finalised(&env, invoice_id, invoice.total_raised, &invoice.seller);
+            return Ok(());
+        }
+
+        let mut record =
+            storage::get_invoice_record(&env, &invoice_id).ok_or(Error::EscrowNotFound)?;
+        if record.status != EscrowStatus::Created && record.status != EscrowStatus::Funded {
             return Err(Error::InvalidInvoiceStatus);
         }
-        if invoice.total_raised < invoice.funding_target {
-            return Err(Error::FundingTargetNotReached);
+        record.status = EscrowStatus::Funded;
+        storage::set_invoice_record(&env, &invoice_id, &record);
+        Ok(())
+    }
+
+    /// Refund an investor's committed position if deadline passed without reaching target.
+    pub fn refund(
+        env: Env,
+        invoice_id: BytesN<32>,
+        investor: Address,
+    ) -> Result<(), Error> {
+        investor.require_auth();
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        ensure_not_paused(&config)?;
+
+        let mut record =
+            storage::get_invoice_record(&env, &invoice_id).ok_or(Error::EscrowNotFound)?;
+
+        if record.status == EscrowStatus::Funded {
+            return Err(Error::InvalidInvoiceStatus);
         }
-        invoice.status = InvoiceStatus::Funded;
-        storage::set_invoice(&env, invoice_id.clone(), &invoice);
-        if invoice.total_raised > 0 {
-            let token_client = token::Client::new(&env, &invoice.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &invoice.seller,
-                &invoice.total_raised,
-            );
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger <= record.deadline_ledger {
+            return Err(Error::FundingDeadlineNotPassed);
         }
-        events::funding_finalised(&env, invoice_id, invoice.total_raised, &invoice.seller);
+
+        let committed = storage::get_investor_position(&env, &invoice_id, &investor);
+        if committed <= 0 {
+            return Err(Error::NoPositionFound);
+        }
+
+        storage::remove_investor_position(&env, &invoice_id, &investor);
+
+        record.total_raised = record
+            .total_raised
+            .checked_sub(committed)
+            .ok_or(Error::Overflow)?;
+
+        storage::set_invoice_record(&env, &invoice_id, &record);
+        events::investment_refunded(&env, &investor, &invoice_id, committed);
+        Ok(())
+    }
+
+    /// Settle invoice pro-rata across investors when seller repays. Callable only by admin.
+    pub fn settle_invoice(
+        env: Env,
+        invoice_id: BytesN<32>,
+        repayment_amount: i128,
+    ) -> Result<(), Error> {
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        config.admin.require_auth();
+
+        let mut record =
+            storage::get_invoice_record(&env, &invoice_id).ok_or(Error::EscrowNotFound)?;
+
+        if record.status != EscrowStatus::Funded {
+            return Err(Error::InvalidInvoiceStatus);
+        }
+
+        if repayment_amount < record.total_raised {
+            return Err(Error::InsufficientRepayment);
+        }
+
+        let mut total_payouts: i128 = 0;
+        for investor in record.investors.iter() {
+            let committed = storage::get_investor_position(&env, &invoice_id, &investor);
+            if committed > 0 {
+                let payout = committed
+                    .checked_mul(repayment_amount)
+                    .ok_or(Error::Overflow)?
+                    .checked_div(record.total_raised)
+                    .ok_or(Error::Overflow)?;
+                let yield_earned = payout.saturating_sub(committed);
+                total_payouts = total_payouts.checked_add(payout).ok_or(Error::Overflow)?;
+                events::settlement_paid(&env, &investor, &invoice_id, payout, yield_earned);
+            }
+        }
+
+        let _dust = repayment_amount
+            .checked_sub(total_payouts)
+            .ok_or(Error::Overflow)?;
+
+        record.status = EscrowStatus::Settled;
+        storage::set_invoice_record(&env, &invoice_id, &record);
+        Ok(())
+    }
+
+    /// Admin-only: refresh TTL for invoice record and all investor position entries.
+    pub fn refresh_all_ttls(env: Env, invoice_id: BytesN<32>) -> Result<(), Error> {
+        let config = storage::get_config(&env).ok_or(Error::NotInit)?;
+        config.admin.require_auth();
+
+        let record =
+            storage::get_invoice_record(&env, &invoice_id).ok_or(Error::EscrowNotFound)?;
+        for investor in record.investors.iter() {
+            let _ = storage::get_investor_position(&env, &invoice_id, &investor);
+        }
         Ok(())
     }
 
@@ -1247,21 +1439,21 @@ impl InvoiceEscrow {
         storage::get_invoice(&env, invoice_id).ok_or(Error::EscrowNotFound)
     }
 
-    /// View: get investor position for a BytesN<32> invoice.
+    /// View: return registered invoice data.
+    pub fn get_invoice_record(env: Env, invoice_id: BytesN<32>) -> Result<InvoiceData, Error> {
+        storage::get_invoice_record(&env, &invoice_id).ok_or(Error::EscrowNotFound)
+    }
+
+    /// View: return investor position amount for an invoice.
     pub fn get_investor_position(
         env: Env,
         invoice_id: BytesN<32>,
         investor: Address,
     ) -> Result<i128, Error> {
-        if storage::get_invoice(&env, invoice_id.clone()).is_none() {
-            return Err(Error::EscrowNotFound);
-        }
-        Ok(storage::get_investor_position(&env, invoice_id, &investor))
+        Ok(storage::get_investor_position(&env, &invoice_id, &investor))
     }
 
     /// Paginated query to retrieve multiple escrows by sequential creation order.
-    /// Returns a Vec of EscrowData for the requested range [start, start+limit).
-    /// Maximum page size is 100. Returns empty Vec if start >= total_count.
     pub fn get_escrows(env: Env, start: u32, limit: u32) -> Result<soroban_sdk::Vec<EscrowData>, Error> {
         const MAX_PAGE_SIZE: u32 = 100;
         

@@ -4239,7 +4239,7 @@ fn test_duplicate_prevention_refund_state_independent_of_payment_duplicates() {
 
     // Trigger refund
     env.ledger().set_timestamp(2_001);
-    ctx.escrow.refund(&ctx.invoice_id);
+    ctx.escrow.refund_escrow(&ctx.invoice_id);
 
     let state_after_refund = ctx
         .distributor
